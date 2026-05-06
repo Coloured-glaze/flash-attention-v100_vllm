@@ -46,7 +46,7 @@ cmdclass = {}
 ext_modules = []
 
 # TODO(luka): This should be replaced with a fetch_content call in CMakeLists.txt
-subprocess.run(["git", "submodule", "update", "--init", "--force", "csrc/cutlass"])
+subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"])
 
 
 def is_sccache_available() -> bool:
@@ -73,11 +73,6 @@ VLLM_TARGET_DEVICE = envs.VLLM_TARGET_DEVICE
 def _is_cuda() -> bool:
     has_cuda = torch.version.cuda is not None
     return VLLM_TARGET_DEVICE == "cuda" and has_cuda
-
-
-def _is_hip() -> bool:
-    return (VLLM_TARGET_DEVICE == "cuda"
-            or VLLM_TARGET_DEVICE == "rocm") and torch.version.hip is not None
 
 
 def is_freethreaded():
@@ -190,6 +185,7 @@ class cmake_build_ext(build_ext):
             cmake_args += [
                 '-DCMAKE_JOB_POOL_COMPILE:STRING=compile',
                 '-DCMAKE_JOB_POOLS:STRING=compile={}'.format(num_jobs),
+                '-DCMAKE_CUDA_FLAGS=-Wno-deprecated-gpu-targets -allow-unsupported-compiler',
             ]
         else:
             # Default build tool to whatever cmake picks.
@@ -261,7 +257,7 @@ def get_package_version():
         return str(public_version)
 
 
-PYTORCH_VERSION = "2.10.0"
+PYTORCH_VERSION = "2.7.0"
 MAIN_CUDA_VERSION = "12.8"
 
 
@@ -291,16 +287,19 @@ def get_version() -> str:
 ext_modules.append(CMakeExtension(name="vllm_flash_attn._vllm_fa2_C"))
 
 setup(
-    name="vllm-flash-attn",
+    name=PACKAGE_NAME,
     version=get_version(),
-    packages=find_packages(exclude=("build",
-                                    "csrc",
-                                    "include",
-                                    "tests",
-                                    "dist",
-                                    "docs",
-                                    "benchmarks",
-                                    f"{PACKAGE_NAME}.egg-info",)),
+    packages=find_packages(
+        # include=[PACKAGE_NAME],
+        exclude=(
+            "build",
+            "csrc",
+            "include",
+            "tests",
+            "dist",
+            "docs",
+            "benchmarks",
+            f"{PACKAGE_NAME}.egg-info",)),
     author="vLLM Team",
     description="Forward-only flash-attn",
     long_description=f"Forward-only flash-attn package built for PyTorch {PYTORCH_VERSION} and CUDA {MAIN_CUDA_VERSION}",
@@ -313,6 +312,6 @@ setup(
     ext_modules=ext_modules,
     cmdclass={"build_ext": cmake_build_ext} if len(ext_modules) > 0 else {},
     python_requires=">=3.8",
-    install_requires=[f"torch == {PYTORCH_VERSION}"],
+    install_requires=[f"torch >= {PYTORCH_VERSION}"],
     setup_requires=["psutil"],
 )

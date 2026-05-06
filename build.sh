@@ -1,30 +1,45 @@
 #!/bin/bash
 
-source .venv/bin/activate
+# source .venv/bin/activate
 
-export CUDA_HOME=/usr/local/cuda-12.8
-export PATH=/usr/local/cuda-12.8/bin:$PATH
-export D_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH
+# cd /workspace/WuTeachingAI/flash-attention-v100/
 
-export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+# export CUDA_HOME=/usr/local/cuda-12.8
+# export PATH=/usr/local/cuda-12.8/bin:$PATH
+# export D_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH
+# export PATH=/workspace/WuTeachingAI/conda3/bin:$PATH
+
+# export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+# export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+
+# export CC=$(which gcc-11)
+# export CXX=$(which g++-11)
+
+# $CXX --version
+nvcc --version
 
 ccache -M 100G
 
-export MAX_JOBS=$(nproc)
-export NVCC_THREADS=1
+echo nproc=$(nproc)
 
-# 定位 site-packages
-SITE_PACKAGES=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+export MAX_JOBS=8
+export NVCC_THREADS=2
 
-FLASH_DIR="$SITE_PACKAGES/vllm_flash_attn"
-VLLM_DIR="$SITE_PACKAGES/vllm"
+# /workspace/WuTeachingAI/conda3/bin/pip uninstall vllm-flash-attn
 
-rm -rf "$VLLM_DIR/vllm_flash_attn"
+# /workspace/WuTeachingAI/conda3/bin/pip install --no-build-isolation . -v 2>&1 | \
+# sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
 
-uv pip uninstall vllm-flash-attn
-uv pip install --no-build-isolation . -v 2>&1 | \
-sed -E 's/.*([1-9][0-9]* bytes (stack frame|spill stores|spill loads)).*/\x1b[31m&\x1b[0m/g'
+# /workspace/WuTeachingAI/conda3/bin/python setup.py bdist_wheel --dist-dir=/workspace/WuTeachingAI/ 2>&1 | \
+# sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
 
-cp -r "$FLASH_DIR" "$VLLM_DIR/"
-rm -rf "$SITE_PACKAGES/flash_attn"
+echo time=$(date '+%F_%H-%M-%S')
+
+python setup.py bdist_wheel 2>&1 | \
+sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
+
+# ls flash-attention-v100/build/temp.linux-x86_64-cpython-312/CMakeFiles/_vllm_fa2_C.dir/csrc/flash_attn/src |grep -n ".cu.o"
+
+echo time=$(date '+%F_%H-%M-%S')
+
+ls dist/vllm*linux*.whl -lh && pip install dist/vllm*linux*.whl 
