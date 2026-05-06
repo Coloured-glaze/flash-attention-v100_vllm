@@ -13,8 +13,17 @@ Flash Attention 移植到 V100 (SM70) GPU，移除了 SM80 支持。
 
 - **tests/ncu_analyse/profile.sh**: 运行 benchmark 脚本，生成 profile 分析结果。
 
+## 构建脚本
+
 - **build.sh**: 构建脚本，用于在 Linux 上构建项目。
 
+## 其他版本的 Flash Attention
+
+- **dist/flash-attention-turing_2**: SM75 Turing 版本的 Flash Attention 。
+
+## 其他文档
+
+- **dist/doc**: 文档目录，包含 v100 参数，atom 布局，其他 v100 flash attention 实现 论文。
 
 **重要**: 构建非常耗时，绝对不要终止 build 任务。
 

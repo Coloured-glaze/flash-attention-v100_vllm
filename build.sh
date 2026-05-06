@@ -18,28 +18,21 @@
 # $CXX --version
 nvcc --version
 
-ccache -M 100G
+ccache -M 10G
 
 echo nproc=$(nproc)
 
 export MAX_JOBS=8
 export NVCC_THREADS=2
 
-# /workspace/WuTeachingAI/conda3/bin/pip uninstall vllm-flash-attn
-
-# /workspace/WuTeachingAI/conda3/bin/pip install --no-build-isolation . -v 2>&1 | \
-# sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
-
-# /workspace/WuTeachingAI/conda3/bin/python setup.py bdist_wheel --dist-dir=/workspace/WuTeachingAI/ 2>&1 | \
-# sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
-
 echo time=$(date '+%F_%H-%M-%S')
 
 python setup.py bdist_wheel 2>&1 | \
-sed -E 's/.*[1-9][0-9]* bytes spill stores.*/\x1b[31m&\x1b[0m/g'
-
-# ls flash-attention-v100/build/temp.linux-x86_64-cpython-312/CMakeFiles/_vllm_fa2_C.dir/csrc/flash_attn/src |grep -n ".cu.o"
+  sed -E '/^(\s*(gcc|g\+\+)|\[[0-9 ]*%\]|\[[0-9]+\/[0-9]+\]|copying|running |building )/Id' | \
+  sed -E 's/.*([1-9][0-9]* bytes spill stores).*/\x1b[31m&\x1b[0m/g'
 
 echo time=$(date '+%F_%H-%M-%S')
 
-ls dist/vllm*linux*.whl -lh && pip install dist/vllm*linux*.whl 
+ls -lh dist/vllm*linux*.whl && \
+  pip install dist/vllm*linux*.whl 2>&1 | \
+  sed -E '/^(Requirement already satisfied|Collecting|Downloading|Processing|  Using cached)/Id' 

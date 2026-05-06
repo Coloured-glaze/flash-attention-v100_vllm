@@ -1,3 +1,4 @@
+cd /mnt/g/python/sd/download/compress/FA_other/flash-attention-v100_vllm/tests/ncu_analyse/ 
 
 echo "start benchmark"
 
@@ -21,6 +22,6 @@ ncu --import profile_out.ncu-rep --csv | head -n 100 > profile_out.csv \
 && \
 python compact_ncu.py profile_out.csv > profile_out.txt
 
-echo "profile analysis done"
+echo "profile analysis done, result saved to profile_out.txt"
 
 
