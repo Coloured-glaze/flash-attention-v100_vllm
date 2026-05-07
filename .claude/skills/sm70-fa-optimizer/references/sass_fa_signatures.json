@@ -1,0 +1,149 @@
+{
+  "$note": "Expected SASS instruction patterns for SM70 Flash Attention forward kernel optimization methods. Used by sass_check.py to verify that claimed optimizations actually appear in compiled code. require_any=true means at least one pattern must match; require_any=false means all patterns must match. Empty sass_patterns means SASS-level verification is not applicable (verified by ncu metrics instead).",
+  "$version": "1.0",
+  "$arch": "sm_70",
+  "methods": {
+    "memory.bank_conflict_swizzle": {
+      "sass_patterns": ["STS\\.128", "STS\\.64", "LDS\\.128", "LDS\\.64"],
+      "require_any": true,
+      "note": "Shared store/load instructions — must verify swizzle XOR pattern in address calculation. Bank conflict reduction is verified by ncu, not SASS."
+    },
+    "memory.pad_smem_layout": {
+      "sass_patterns": ["STS\\.128", "STS\\.64"],
+      "require_any": true,
+      "note": "Padding changes stride in STS instructions. Need to compare STS address offsets between baseline and optimized."
+    },
+    "memory.tiling_smem": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Tile size affects loop count and register usage. Verified by smaller grid size and changed register count, not specific SASS patterns."
+    },
+    "memory.vectorized_access": {
+      "sass_patterns": ["LDG\\.E\\.128", "STG\\.E\\.128", "LDG\\.E\\.64"],
+      "require_any": true,
+      "note": "Vectorized global load/store. LDG.E.128 = 128-bit (optimal for SM70). LDG.E.64 = 64-bit (suboptimal). Should see LDG.E.128.STRONG.GPU."
+    },
+    "memory.reduce_smem_usage": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced shared memory allocation (check SASS header's SMEM directive) and changed occupancy in ncu."
+    },
+    "memory.cache_modifier": {
+      "sass_patterns": ["LDG\\.E\\.128\\.STRONG\\.GPU", "LDG\\.E\\.128\\.STRONG\\.SYS", "LDG\\.E\\.128\\.STRONG\\.CTA"],
+      "require_any": true,
+      "note": "Cache modifier appears as suffix on LDG instructions. .GPU = .cg (cache global), .SYS = .cv (volatile), .CTA = .ca (cache all)."
+    },
+    "memory.layout_transpose_optimize": {
+      "sass_patterns": ["STS\\.128", "LDS\\.128", "SHFL"],
+      "require_any": true,
+      "note": "V transpose may use SHFL for in-register transpose or STS/LDS for smem-based transpose. Check for reduced instruction count."
+    },
+    "compute.reduce_register_pressure": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced register count in SASS header and increased occupancy in ncu. No specific SASS instruction pattern."
+    },
+    "compute.increase_tile_size": {
+      "sass_patterns": ["HMMA\\.884\\.F32\\.F16"],
+      "require_any": true,
+      "note": "HMMA.884.F32.F16 is the SM70 Tensor Core instruction (8x8x4 FP16 MMA). Larger tiles → more HMMA instructions per iteration."
+    },
+    "compute.tc_mma_atom_optimize": {
+      "sass_patterns": ["HMMA\\.884\\.F32\\.F16"],
+      "require_any": true,
+      "note": "SM70 only supports HMMA.884.F32.F16 (FP16) and HMMA.884.F32.F32 (FP32). Verify correct variant for data type."
+    },
+    "compute.fragment_conversion_optimize": {
+      "sass_patterns": ["SHFL\\.IDX", "SHFL\\.DOWN", "SHFL\\.UP", "SHFL\\.XOR", "SHFL\\.BFLY"],
+      "require_any": true,
+      "note": "C→A fragment conversion uses warp shuffle. Optimization reduces SHFL count or replaces with different SHFL variant."
+    },
+    "compute.softmax_sfu_optimize": {
+      "sass_patterns": ["MUFU\\.EX2"],
+      "require_any": true,
+      "note": "MUFU.EX2 = exp2 SFU instruction. Replaces MUFU.EX (if that exists) or software exp() sequence."
+    },
+    "compute.loop_unroll_pragma": {
+      "sass_patterns": ["BRA", "BRX", "JMP"],
+      "require_any": false,
+      "note": "Unrolling removes branches. Count: fewer BRA/BRX instructions in hot loop = better unrolling. verify_min_count should be 0 for the main loop."
+    },
+    "latency.mio_throttle_reduce": {
+      "sass_patterns": ["STS\\.128", "STS\\.64", "LDS\\.128", "LDS\\.64"],
+      "require_any": true,
+      "note": "MIO throttle reduction = fewer shared memory instructions. Count STS+LDS and compare to baseline."
+    },
+    "latency.reduce_sync_barrier": {
+      "sass_patterns": ["BAR\\.SYNC", "SYNC"],
+      "require_any": true,
+      "note": "BAR.SYNC = __syncthreads(). Fewer BAR.SYNC instructions = reduced sync barrier."
+    },
+    "latency.pipeline_depth": {
+      "sass_patterns": ["LDG\\.E\\.128", "HMMA\\.884"],
+      "require_any": true,
+      "note": "Pipeline depth verified by interleaving of LDG (load) and HMMA (compute) in SASS disassembly order."
+    },
+    "latency.warp_specialization_sm70": {
+      "sass_patterns": ["BAR\\.SYNC"],
+      "require_any": true,
+      "note": "SM70 warp specialization uses BAR.SYNC for producer-consumer coordination. Check that some warps do LDG-heavy work while others do HMMA-heavy work."
+    },
+    "latency.early_exit_optimize": {
+      "sass_patterns": ["BRA", "EXIT"],
+      "require_any": true,
+      "note": "Early exit = branch out of main loop. Verified by branch pattern in SASS."
+    }
+  },
+  "fa_specific_patterns": {
+    "tc_mma": {
+      "sass_patterns": ["HMMA\\.884\\.F32\\.F16"],
+      "require_any": true,
+      "note": "SM70 Tensor Core FP16 MMA: 8x8x4. Should appear in pairs for each MMA atom invocation in TiledMMA."
+    },
+    "global_load_128": {
+      "sass_patterns": ["LDG\\.E\\.128\\.STRONG\\.GPU"],
+      "require_any": true,
+      "note": "128-bit cached global load, bypassing L1. Used for Q, K, V streaming reads."
+    },
+    "global_store_128": {
+      "sass_patterns": ["STG\\.E\\.128"],
+      "require_any": true,
+      "note": "128-bit global store. Used for O output and P (softmax_lse) output."
+    },
+    "shared_store_128": {
+      "sass_patterns": ["STS\\.128"],
+      "require_any": true,
+      "note": "128-bit shared store. Used for writing Q/K/V tiles to smem. Bank conflicts visible in ncu."
+    },
+    "shared_load_128": {
+      "sass_patterns": ["LDS\\.128"],
+      "require_any": true,
+      "note": "128-bit shared load. Used for MMA input reads from smem."
+    },
+    "warp_shuffle": {
+      "sass_patterns": ["SHFL"],
+      "require_any": true,
+      "note": "Warp shuffle instructions. Key to C→A fragment conversion in convert_layout_C_to_A_v2."
+    },
+    "fp32_fma": {
+      "sass_patterns": ["FFMA"],
+      "require_any": true,
+      "note": "FP32 FMA instruction. Used in softmax rescaling and accumulator operations."
+    },
+    "sfu_ex2": {
+      "sass_patterns": ["MUFU\\.EX2"],
+      "require_any": true,
+      "note": "SFU exp2 instruction. Used in online softmax for exponentiation."
+    },
+    "barrier_sync": {
+      "sass_patterns": ["BAR\\.SYNC"],
+      "require_any": true,
+      "note": "Thread block barrier. Each __syncthreads() = one BAR.SYNC."
+    },
+    "fp16_conversion": {
+      "sass_patterns": ["F2F\\.F16\\.F32", "F2F\\.F32\\.F16"],
+      "require_any": true,
+      "note": "FP16 ↔ FP32 conversion. F2F.F16.F32 = half→float, F2F.F32.F16 = float→half."
+    }
+  }
+}

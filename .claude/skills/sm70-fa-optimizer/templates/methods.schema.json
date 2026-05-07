@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "sm70-fa-methods-schema",
+  "title": "SM70 FA Optimization Methods Record",
+  "description": "Schema for the methods.json file recording optimization methods applied in an SM70 FA iteration",
+  "type": "object",
+  "required": ["iteration", "methods"],
+  "properties": {
+    "iteration": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Iteration number"
+    },
+    "champion_branch": {
+      "type": "string",
+      "description": "Branch identifier of the selected champion (e.g., 'b2')"
+    },
+    "champion_config": {
+      "type": "object",
+      "description": "kernel_traits template parameters for the champion",
+      "properties": {
+        "kHeadDim": {"type": "integer"},
+        "kBlockM": {"type": "integer"},
+        "kBlockN": {"type": "integer"},
+        "kCtaWarps": {"type": "integer"},
+        "kMmaLayoutWarps": {"type": "integer"},
+        "kWarpRows": {"type": "integer", "description": "Derived: kBlockM / kCtaWarps"},
+        "kNThreads": {"type": "integer", "description": "Derived: kCtaWarps * 32"},
+        "kBlockKSmem": {"type": "integer"},
+        "kSwizzle": {"type": "integer"},
+        "kSmemSize_kb": {"type": "number"}
+      }
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "axis", "priority", "selected"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Method identifier from sm70_fa_catalog.md",
+            "pattern": "^(compute|memory|latency)\\.\\w+$"
+          },
+          "axis": {
+            "type": "string",
+            "enum": ["compute", "memory", "latency"]
+          },
+          "priority": {
+            "type": "string",
+            "pattern": "^P\\d+$"
+          },
+          "selected": {
+            "type": "boolean",
+            "description": "Whether this method was selected for this iteration"
+          },
+          "skip_reason": {
+            "type": "string",
+            "description": "If not selected, why it was skipped"
+          },
+          "trigger_evidence": {
+            "type": "string",
+            "description": "ncu metric evidence that triggered this method"
+          },
+          "implementation": {
+            "type": "string",
+            "description": "What code/trait changes were made"
+          },
+          "expected_ncu_shift": {
+            "type": "string",
+            "description": "Expected changes in ncu metrics"
+          },
+          "effective": {
+            "type": "boolean",
+            "description": "Whether the method was effective (from ablation)"
+          },
+          "attribution_ms": {
+            "type": "number",
+            "description": "Time difference when this method is ablated"
+          },
+          "sass_verified": {
+            "type": "boolean",
+            "description": "Whether SASS verification passed"
+          }
+        }
+      }
+    },
+    "ncu_snapshot": {
+      "type": "object",
+      "description": "Key ncu metrics before and after",
+      "properties": {
+        "before": {"$ref": "#/definitions/ncuMetrics"},
+        "after": {"$ref": "#/definitions/ncuMetrics"}
+      }
+    }
+  },
+  "definitions": {
+    "ncuMetrics": {
+      "type": "object",
+      "properties": {
+        "duration_ms": {"type": "number"},
+        "sm_throughput_pct": {"type": "number"},
+        "memory_throughput_pct": {"type": "number"},
+        "occupancy_pct": {"type": "number"},
+        "registers_per_thread": {"type": "integer"},
+        "smem_per_block_kb": {"type": "number"},
+        "bank_conflict_load_pct": {"type": "number"},
+        "bank_conflict_store_pct": {"type": "number"},
+        "mio_throttle_pct": {"type": "number"},
+        "eligible_warps_per_sched": {"type": "number"},
+        "ipc": {"type": "number"},
+        "l1_hit_rate_pct": {"type": "number"},
+        "l2_hit_rate_pct": {"type": "number"},
+        "dram_throughput_pct": {"type": "number"}
+      }
+    }
+  }
+}
