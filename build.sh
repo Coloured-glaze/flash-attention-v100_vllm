@@ -34,5 +34,5 @@ python setup.py bdist_wheel 2>&1 | \
 echo time=$(date '+%F_%H-%M-%S')
 
 ls -lh dist/vllm*linux*.whl && \
-  pip install dist/vllm*linux*.whl 2>&1 | \
+  pip uninstall vllm_flash_attn -y && pip install dist/vllm*linux*.whl 2>&1 | \
   sed -E '/^(Requirement already satisfied|Collecting|Downloading|Processing|  Using cached)/Id' 

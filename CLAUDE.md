@@ -31,4 +31,5 @@ Flash Attention 移植到 V100 (SM70) GPU，移除了 SM80 支持。
 
 - `csrc/flash_attn/src/flash_fwd_kernel.h` - 前向 kernel 主实现
 - `csrc/flash_attn/src/kernel_traits.h` - TiledMMA 定义
+- `csrc/flash_attn/src/utils.h` - 工具函数，tensor布局断言
 - `flash_attn/flash_attn_interface.py` - Python 接口
