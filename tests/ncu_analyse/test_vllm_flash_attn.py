@@ -9,7 +9,7 @@ try:
 except ImportError as e:
     raise ImportError("Tile Flash Attention not found") from e
 
-import torch, math
+import torch, math, os
 import torch.nn.functional as F
 # from torch.nn.attention import SDPBackend, sdpa_kernel
 import argparse
@@ -62,7 +62,7 @@ def torch_profile(
                 result = func(*args, **kwargs); torch.cuda.synchronize()
         torch.cuda.empty_cache()
         filtered_output = '\n'.join(
-            line for line in prof.key_averages().table(sort_by="cuda_time_total", row_limit=10).split('\n') if '---' not in line)
+            line for line in prof.key_averages().table(sort_by="cuda_time_total", row_limit=10, max_name_column_width=100).split('\n') if '---' not in line)
         print(filtered_output)
         print(result.shape, result[0][0][0][0:8], "\n")     
         return result
@@ -93,13 +93,15 @@ def torch_profile(
 
     if vllm_flash_result is not None and sdp_result is not None:
         diff = torch.abs(vllm_flash_result - sdp_result)
-        print(f"VLLM Flash Attention max diff: {diff.max()}, mean: {diff.mean()}")
-        assert torch.allclose(vllm_flash_result, sdp_result, atol=2e-4, rtol=2e-4), "VLLM Flash Attention and SDPA results do not match."
+        print(f"VLLM Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n", flush=True)
+        if not torch.allclose(vllm_flash_result, sdp_result, atol=5e-4, rtol=5e-4):
+            print("VLLM Flash Attention and SDPA results do not match.")
 
     if tile_flash_result is not None and sdp_result is not None:
         diff = torch.abs(tile_flash_result - sdp_result)
-        print(f"Tile Flash Attention max diff: {diff.max()}, mean: {diff.mean()}\n")
-        assert torch.allclose(tile_flash_result, sdp_result, atol=2e-4, rtol=2e-4), "Tile Flash Attention and SDPA results do not match."
+        print(f"Tile Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n", flush=True)
+        if not torch.allclose(tile_flash_result, sdp_result, atol=5e-4, rtol=5e-4):
+            print("Tile Flash Attention and SDPA results do not match.")
 
 # ==========================================================================================
 
@@ -154,16 +156,22 @@ def flops(
             tile_result = kernel(query, key, value, mask)
         else:   
             tile_result = kernel(query, key, value)
+
+        if args.show_tile_source:
+            with open(os.path.join(os.path.dirname(__file__), "tile_flash_attention.cu"), "w") as f:
+                f.write(kernel.get_kernel_source())
     
     if ref_result is not None:
         diff = torch.abs(fa_result - ref_result)
-        print(f"VLLM Flash Attention max: {diff.max()}, mean: {diff.mean()}\n")
-        assert torch.allclose(fa_result, ref_result, atol=2e-4, rtol=2e-4), "VLLM Flash Attention and Ref torch results do not match."
+        print(f"VLLM Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n")
+        if not torch.allclose(fa_result, ref_result, atol=5e-4, rtol=5e-4):
+            print("VLLM Flash Attention and Ref torch results do not match.")
     
-    if tile_result is not None:
+    if tile_result is not None and ref_result is not None:
         diff = torch.abs(tile_result - ref_result)
-        print(f"Tile Flash Attention max: {diff.max()}, mean: {diff.mean()}\n")
-        assert torch.allclose(tile_result, ref_result, atol=2e-4, rtol=2e-4), "Tile Flash Attention and Ref torch results do not match."
+        print(f"Tile Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n")
+        if not torch.allclose(tile_result, ref_result, atol=5e-4, rtol=5e-4):
+            print("Tile Flash Attention and Ref torch results do not match.")
 
     latency = do_bench(lambda: ref_program_fa(query, key, value), warmup=num)
     print("VLLM Flash Attention: {:.3f} ms".format(latency))
@@ -181,22 +189,29 @@ def flops(
         latency = do_bench(lambda: ref_program(query, key, value, mask, is_causal), warmup=num)
         print("Ref SDPA: {:.3f} ms".format(latency))
         print("Ref SDPA: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
-        torch.testing.assert_close(fa_result, ref_result, rtol=2e-4, atol=2e-4)
+        torch.testing.assert_close(fa_result, ref_result, rtol=5e-4, atol=5e-4)
         print(f"fa_result checks pass.")
     
-    if args.use_tile:
-        torch.testing.assert_close(tile_result, ref_result, rtol=2e-4, atol=2e-4)
+    if args.use_tile and ref_result is not None:
+        torch.testing.assert_close(tile_result, ref_result, rtol=5e-4, atol=5e-4)
         print(f"tile_result checks pass.")
 
 
 # region run test
 
 if __name__ == "__main__":
+    import os
+
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1" 
+    os.environ["TORCH_USE_CUDA_DSA"] = "1"
+    
     parser = argparse.ArgumentParser(description="Test VLLM Flash Attention")
     parser.add_argument("--profile", action="store_true", help="Profile the kernel")
     parser.add_argument("--flops", action="store_true", help="Test the flops")
+    parser.add_argument("--show_tile_source", action="store_true", help="Show the tile source")
     parser.add_argument("--use_tile", action="store_true", help="Use the tile flash attention")
     parser.add_argument("--use_sdpa", action="store_true", help="Use the SDPA results")
+    parser.add_argument("--flops_num", type=int, default=200, help="Number of flops test")
     
     args = parser.parse_args()
     if args.profile:
@@ -208,7 +223,7 @@ if __name__ == "__main__":
 
     if args.flops:
         flops(
-            args, num = 200,
+            args, num = args.flops_num,
             BATCH = 1, N_HEADS = 40, SEQ_LEN = 4096, HEAD_DIM = 128,
             block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
         )

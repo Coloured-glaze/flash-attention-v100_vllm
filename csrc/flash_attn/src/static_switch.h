@@ -76,25 +76,54 @@
   #define LOCAL_SWITCH BOOL_SWITCH
 #endif
 
-#define HEADDIM_SWITCH(HEADDIM, ...)   \
-  [&] {                                    \
-    if (HEADDIM <= 32) {                   \
-      constexpr static int kHeadDim = 32;  \
-      return __VA_ARGS__();                \
-    } else if (HEADDIM <= 64) {            \
-      constexpr static int kHeadDim = 64;  \
-      return __VA_ARGS__();                \
-    } else if (HEADDIM <= 96) {            \
-      constexpr static int kHeadDim = 96;  \
-      return __VA_ARGS__();                \
-    } else if (HEADDIM <= 128) {           \
-      constexpr static int kHeadDim = 128; \
-      return __VA_ARGS__();                \
-    } else if (HEADDIM <= 192) {           \
-      constexpr static int kHeadDim = 192; \
-      return __VA_ARGS__();                \
-    } else if (HEADDIM <= 256) {           \
-      constexpr static int kHeadDim = 256; \
-      return __VA_ARGS__();                \
-    }                                      \
+#ifndef FA2_HDIM_MAX
+#define FA2_HDIM_MAX 256
+#endif
+
+#if FA2_HDIM_MAX >= 256
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    if (HEADDIM <= 32) { constexpr static int kHeadDim = 32; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 64) { constexpr static int kHeadDim = 64; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 96) { constexpr static int kHeadDim = 96; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 128) { constexpr static int kHeadDim = 128; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 192) { constexpr static int kHeadDim = 192; return __VA_ARGS__(); } \
+    else { constexpr static int kHeadDim = 256; return __VA_ARGS__(); } \
   }()
+#elif FA2_HDIM_MAX >= 192
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    if (HEADDIM <= 32) { constexpr static int kHeadDim = 32; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 64) { constexpr static int kHeadDim = 64; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 96) { constexpr static int kHeadDim = 96; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 128) { constexpr static int kHeadDim = 128; return __VA_ARGS__(); } \
+    else { constexpr static int kHeadDim = 192; return __VA_ARGS__(); } \
+  }()
+#elif FA2_HDIM_MAX >= 128
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    if (HEADDIM <= 32) { constexpr static int kHeadDim = 32; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 64) { constexpr static int kHeadDim = 64; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 96) { constexpr static int kHeadDim = 96; return __VA_ARGS__(); } \
+    else { constexpr static int kHeadDim = 128; return __VA_ARGS__(); } \
+  }()
+#elif FA2_HDIM_MAX >= 96
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    if (HEADDIM <= 32) { constexpr static int kHeadDim = 32; return __VA_ARGS__(); } \
+    else if (HEADDIM <= 64) { constexpr static int kHeadDim = 64; return __VA_ARGS__(); } \
+    else { constexpr static int kHeadDim = 96; return __VA_ARGS__(); } \
+  }()
+#elif FA2_HDIM_MAX >= 64
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    if (HEADDIM <= 32) { constexpr static int kHeadDim = 32; return __VA_ARGS__(); } \
+    else { constexpr static int kHeadDim = 64; return __VA_ARGS__(); } \
+  }()
+#else
+#define HEADDIM_SWITCH(HEADDIM, ...) \
+  [&] { \
+    constexpr static int kHeadDim = 32; \
+    return __VA_ARGS__(); \
+  }()
+#endif

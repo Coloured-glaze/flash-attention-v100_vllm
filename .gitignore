@@ -36,6 +36,14 @@ venv
 flash_attn_config.py
 analysis/
 
+
 *.ncu-rep
 profile_out.csv
 profile_out.txt
+profile_out_*.csv
+profile_out_*.txt
+*_tmp.txt
+*_temp.txt
+cuda_kernel_sample/*
+tests/ncu_analyse/tl_templates/*
+tests/ncu_analyse/tile_flash_attention.cu

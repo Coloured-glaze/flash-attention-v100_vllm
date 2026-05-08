@@ -6,6 +6,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(FA2_ENABLED ON)
 
+# Option to selectively build only specific head dimension kernels.
+# Set to a comma-separated list of head dimensions, e.g. "128" or "64,128".
+# If empty (default), all head dimension kernels will be built.
+set(FA_HDIM "" CACHE STRING "Comma-separated list of head dimensions to build (e.g. '128' or '64,128'). Empty = build all.")
+
 # CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
 set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
 
@@ -46,6 +51,10 @@ message(DEBUG "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 # etc.
 #
 if (NOT Torch_FOUND)
+    # conda install -c conda-forge kineto
+    
+    # Suppress kineto library not found warning (kineto is optional for profiling)
+    set(TORCH_KINETO_LIBRARY "" CACHE STRING "Kineto library path (optional)" FORCE)
     find_package(Torch REQUIRED)
 endif()
 
@@ -83,9 +92,57 @@ string(REPLACE "-O2" "-O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_R
 #
 
 if (FA2_ENABLED)
-    file(GLOB FA2_GEN_SRCS 
+    file(GLOB _FA2_ALL_SRCS 
         "csrc/flash_attn/src/flash_fwd_split_hdim*.cu"
         "csrc/flash_attn/src/flash_fwd_hdim*.cu")
+
+    if (FA_HDIM STREQUAL "")
+        set(FA2_GEN_SRCS "${_FA2_ALL_SRCS}")
+        message(STATUS "FA2: Building ALL head dimension kernels")
+    else ()
+        # Parse comma-separated list of hdims and find the maximum
+        string(REPLACE "," ";" _FA_HDIM_LIST "${FA_HDIM}")
+        set(_FA2_HDIM_MAX 0)
+        foreach(_HDIM ${_FA_HDIM_LIST})
+            if (_HDIM GREATER _FA2_HDIM_MAX)
+                set(_FA2_HDIM_MAX ${_HDIM})
+            endif()
+        endforeach()
+        # Check if FA_HDIM is a single value (no comma)
+        string(FIND "${FA_HDIM}" "," _FA_HDIM_COMMA_POS)
+        if (_FA_HDIM_COMMA_POS EQUAL -1)
+            # Single exact hdim: build only the needed .cu files
+            set(FA2_GEN_SRCS "")
+            foreach(_SRC ${_FA2_ALL_SRCS})
+                get_filename_component(_SRC_NAME "${_SRC}" NAME_WE)
+                string(FIND "${_SRC_NAME}" "hdim${_FA2_HDIM_MAX}_" _FOUND)
+                if (NOT _FOUND EQUAL -1)
+                    list(APPEND FA2_GEN_SRCS "${_SRC}")
+                endif()
+            endforeach()
+            list(LENGTH FA2_GEN_SRCS _N_SRCS)
+            message(STATUS "FA2: Building only hdim=${_FA2_HDIM_MAX} (${_N_SRCS} files)")
+        else ()
+            # Multiple hdims: build sources up to max needed
+            set(_FA2_KNOWN_HDIMS 32 64 96 128 192 256)
+            set(FA2_GEN_SRCS "")
+            foreach(_SRC ${_FA2_ALL_SRCS})
+                get_filename_component(_SRC_NAME "${_SRC}" NAME_WE)
+                foreach(_HDIM ${_FA2_KNOWN_HDIMS})
+                    if (_HDIM GREATER _FA2_HDIM_MAX)
+                        break()
+                    endif()
+                    string(FIND "${_SRC_NAME}" "hdim${_HDIM}_" _FOUND)
+                    if (NOT _FOUND EQUAL -1)
+                        list(APPEND FA2_GEN_SRCS "${_SRC}")
+                        break()
+                    endif()
+                endforeach()
+            endforeach()
+            list(LENGTH FA2_GEN_SRCS _N_SRCS)
+            message(STATUS "FA2: Building hdims up to ${_FA2_HDIM_MAX} (${_N_SRCS} files)")
+        endif ()
+    endif ()
 
     # For CUDA we set the architectures on a per file basis
     if (VLLM_GPU_LANG STREQUAL "CUDA")
@@ -116,13 +173,41 @@ if (FA2_ENABLED)
         csrc/cutlass/include)
 
     # custom definitions
-    target_compile_definitions(_vllm_fa2_C PRIVATE
-        FLASHATTENTION_DISABLE_BACKWARD
-        FLASHATTENTION_DISABLE_DROPOUT
-        # FLASHATTENTION_DISABLE_ALIBI
-        # FLASHATTENTION_DISABLE_SOFTCAP
-        # FLASHATTENTION_DISABLE_UNEVEN_K
-        # FLASHATTENTION_DISABLE_LOCAL
-        FLASHATTENTION_DISABLE_PYBIND
-    )
+    if (FA_HDIM STREQUAL "")
+        target_compile_definitions(_vllm_fa2_C PRIVATE
+            FLASHATTENTION_DISABLE_BACKWARD
+            FLASHATTENTION_DISABLE_DROPOUT
+            # FLASHATTENTION_DISABLE_ALIBI
+            # FLASHATTENTION_DISABLE_SOFTCAP
+            # FLASHATTENTION_DISABLE_UNEVEN_K
+            # FLASHATTENTION_DISABLE_LOCAL
+            FLASHATTENTION_DISABLE_PYBIND
+        )
+    else ()
+        string(FIND "${FA_HDIM}" "," _FA_HDIM_COMMA_POS)
+        if (_FA_HDIM_COMMA_POS EQUAL -1)
+            target_compile_definitions(_vllm_fa2_C PRIVATE
+                FLASHATTENTION_DISABLE_BACKWARD
+                FLASHATTENTION_DISABLE_DROPOUT
+                # FLASHATTENTION_DISABLE_ALIBI
+                # FLASHATTENTION_DISABLE_SOFTCAP
+                # FLASHATTENTION_DISABLE_UNEVEN_K
+                # FLASHATTENTION_DISABLE_LOCAL
+                FLASHATTENTION_DISABLE_PYBIND
+                FA2_HDIM_MAX=${_FA2_HDIM_MAX}
+                FA2_HDIM_EXACT=${_FA2_HDIM_MAX}
+            )
+        else ()
+            target_compile_definitions(_vllm_fa2_C PRIVATE
+                FLASHATTENTION_DISABLE_BACKWARD
+                FLASHATTENTION_DISABLE_DROPOUT
+                # FLASHATTENTION_DISABLE_ALIBI
+                # FLASHATTENTION_DISABLE_SOFTCAP
+                # FLASHATTENTION_DISABLE_UNEVEN_K
+                # FLASHATTENTION_DISABLE_LOCAL
+                FLASHATTENTION_DISABLE_PYBIND
+                FA2_HDIM_MAX=${_FA2_HDIM_MAX}
+            )
+        endif ()
+    endif ()
 endif ()

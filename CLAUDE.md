@@ -11,19 +11,20 @@ Flash Attention 移植到 V100 (SM70) GPU，移除了 SM80 支持。
 
 ## benchmark
 
-- **tests/ncu_analyse/profile.sh**: 运行 benchmark 脚本，生成 profile 分析结果。
+- **tests/ncu_analyse/profile.sh**: 运行 benchmark 脚本，并生成 profile 结果，分析内核瓶颈。
 
 ## 构建脚本
 
-- **build.sh**: 构建脚本，用于在 Linux 上构建项目。
+- **build.sh**: 构建脚本，用于在 shell 上构建项目
 
-## 其他版本的 Flash Attention
+## 其他参考文档
 
-- **dist/flash-attention-turing_2**: SM75 Turing 版本的 Flash Attention 。
-
-## 其他文档
-
-- **dist/doc**: 文档目录，包含 v100 参数，atom 布局，其他 v100 flash attention 实现 论文。
+- **cuda_kernel_sample/doc**: 文档目录，包含 v100 参数，atom 布局，其他 v100 flash attention 实现 论文。
+- **.claude/skills/sm70-fa-optimizer**: SM70 Flash Attention 优化技能，包含优化fa内核的skills。
+- **cuda_kernel_sample/flash-attention-turing_2**: SM75 Turing 版本的 Flash Attention 。
+- **cuda_kernel_sample/cuda_LeetCUDA/kernels**: 包含大量 cuda 内核示例, 包括多种FA实现。
+- **cuda_kernel_sample/cuda_learn**: 包含 cuda 内核示例。
+- **cuda_kernel_sample/cuda_kernels-community**: 包含hf社区收集的 cuda 内核，包含标准的 FA2 FA3 FA4 实现。。
 
 **重要**: 构建非常耗时，绝对不要终止 build 任务。
 

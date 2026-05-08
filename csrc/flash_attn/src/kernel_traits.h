@@ -101,8 +101,8 @@ struct Flash_fwd_kernel_traits  {
     using ElementAccum = float;
     using index_t = int64_t;
     using MMA_Atom_Arch = MMA_Atom<SM70_8x8x4_F32F16F16F32_TN>;
-    using SmemCopyAtom = Copy_Atom<DefaultCopy, Element>;
-    using SmemCopyAtomTransposed = Copy_Atom<DefaultCopy, Element>;
+    using SmemCopyAtom = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
+    using SmemCopyAtomTransposed = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
 
     // The number of threads.
     static constexpr int kCtaWarps = kCtaWarps_;

@@ -25,13 +25,15 @@ from setuptools.command.build_ext import build_ext
 logger = logging.getLogger(__name__)
 
 # Enivronment variables
-Envs = namedtuple("Envs", ["VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE"])
+Envs = namedtuple("Envs", [
+    "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM"])
 envs = Envs(
     VERBOSE=bool(int(os.getenv("VERBOSE", "0"))),
     MAX_JOBS=os.getenv("MAX_JOBS"),
     NVCC_THREADS=os.getenv("NVCC_THREADS"),
     VLLM_TARGET_DEVICE=os.getenv("VLLM_TARGET_DEVICE", "cuda"),
     CMAKE_BUILD_TYPE=os.getenv("CMAKE_BUILD_TYPE"),
+    FA_HDIM=os.getenv("FA_HDIM", ""),
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -99,7 +101,6 @@ class cmake_build_ext(build_ext):
         num_jobs = envs.MAX_JOBS
         if num_jobs is not None:
             num_jobs = int(num_jobs)
-            logger.info("Using MAX_JOBS=%d as the number of jobs.", num_jobs)
         else:
             try:
                 # os.sched_getaffinity() isn't universally available, so fall
@@ -107,6 +108,8 @@ class cmake_build_ext(build_ext):
                 num_jobs = len(os.sched_getaffinity(0))
             except AttributeError:
                 num_jobs = os.cpu_count()
+        
+        logger.info("Using MAX_JOBS=%d as the number of jobs.", num_jobs)
 
         nvcc_threads = None
         if _is_cuda() and get_nvcc_cuda_version() >= Version("11.2"):
@@ -148,6 +151,9 @@ class cmake_build_ext(build_ext):
             '-DTORCH_CUDA_ARCH_LIST=7.0',
         ]
 
+        if envs.FA_HDIM:
+            cmake_args += ['-DFA_HDIM={}'.format(envs.FA_HDIM)]
+
         verbose = envs.VERBOSE
         if verbose:
             cmake_args += ['-DCMAKE_VERBOSE_MAKEFILE=ON']
@@ -182,10 +188,14 @@ class cmake_build_ext(build_ext):
 
         if is_ninja_available():
             build_tool = ['-G', 'Ninja']
+            DCMAKE_CUDA_FLAGS = [
+                "-Wno-deprecated-gpu-targets",
+                "-allow-unsupported-compiler",
+                "-lineinfo",
+            ]
             cmake_args += [
-                '-DCMAKE_JOB_POOL_COMPILE:STRING=compile',
                 '-DCMAKE_JOB_POOLS:STRING=compile={}'.format(num_jobs),
-                '-DCMAKE_CUDA_FLAGS=-Wno-deprecated-gpu-targets -allow-unsupported-compiler',
+                '-DCMAKE_CUDA_FLAGS={}'.format(" ".join(DCMAKE_CUDA_FLAGS)),
             ]
         else:
             # Default build tool to whatever cmake picks.

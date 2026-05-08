@@ -84,6 +84,94 @@ bash build.sh
 | MIO throttle stall | 46.3% | Shared memory instruction queue saturation |
 | DRAM throughput | 1.15% | Not DRAM-bound — compute/smem bound |
 
+### Optimized bottleneck profile (current best: BlockM=64, BlockN=64, K/V+Q/O smem shared)
+| Metric | Value | vs Baseline | Interpretation |
+|--------|-------|-------------|----------------|
+| Duration | 9.23 ms | **-39.3%** | 15.21ms → 9.23ms |
+| Occupancy | 18.75% | +50% | 3 blocks/SM, limited by 32KB smem + 168 regs |
+| SM Throughput | 39.70% | — | Slightly lower but more efficient per-warp |
+| IPC | 1.64 | **+39%** | Higher arithmetic intensity per warp |
+| Memory Throughput | 81.27% | — | Reduced L1 pressure |
+| L2 hit rate | 97.46% | stable | Healthy cache residency |
+| Bank conflicts (load) | 42.9% (2.3-way) | improved | Still present but manageable |
+| Bank conflicts (store) | 18.2% (4.7-way) | unchanged | From epilogue MMA→smem writes |
+| Registers/thread | 168 | — | Acceptable, no DRAM spill |
+| Active Warps/SM | 11.90 | +49% | 3 blocks × 4 warps |
+| DRAM throughput | 2.44% | stable | No register spill to DRAM |
+| CPI | 7.24 | +7% | Slightly higher due to fewer warps hiding latency |
+| Waves/SM | 10.67 | — | Reduced wave count = less contention |
+
+### Optimal tile configuration (empirically verified)
+```cpp
+// kernel_traits.h (effective parameters)
+Flash_fwd_kernel_traits<128, 64, 64, 4, 4>
+// HeadDim=128, BlockM=64, BlockN=64, kCtaWarps=4
+// kWarpRows=16, Tile<16, 16, 4>
+// kSwizzle=3 (identity), Is_Q_in_regs=false
+// K/V smem shared, Q/O smem shared
+```
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| BlockM | 64 | kWarpRows=16 gives 2x arithmetic intensity vs 8 |
+| BlockN | 64 | Fewer outer loop iterations (64 vs 128 for BN=32) |
+| kCtaWarps | 4 | 128 threads, balanced register distribution |
+| kSwizzle | 3 | Identity XOR, original design choice |
+| K/V sharing | Yes | Saves kBlockN*kHeadDim smem (16KB for BN=64) |
+| Q/O sharing | Yes | Built-in (sO at sQ.data()), saves kBlockM*kHeadDim |
+| Is_Q_in_regs | No | Causes 168→255 reg spill to DRAM on V100 |
+| SmemLayoutAtomQ | Shape<8, 64> | Do NOT change to Shape<16, 64> (OOB bug) |
+
+### Lessons learned — what NOT to try
+
+| Attempt | Result | Root Cause |
+|---------|--------|------------|
+| Is_Q_in_regs=true | DRAM spill (32ms, +110%) | Q fragment regs pushed total >255, compiler spilt to local memory |
+| BlockN=32 (4 blocks) | +9.9% slower (10.1ms) | 2x outer loop sync cost > occupancy gain |
+| Shape<16,64> in SmemLayoutAtomQ | OOB shared memory read | tile_to_shape stride incompatibility with partition_B/retile_S |
+| Tile K=4→8 in TiledMma | Potential OOB | Partition stride assumptions incompatible |
+| kBlockKSmem=128 | Worse bank conflicts | 16 threads/row creates 2-way gmem→smem conflicts |
+| SmemLayoutO non-swizzled | No effect | kSwizzle=3 already identity, so no change |
+| FP16 accumulator for MMA | Not available | Volta m8n8k4 only supports FP32 accumulator |
+| L1 carveout change | Not available | V100 only has 96/32 or 0/128 KB smem/L1 split |
+
+### SM70 smem sharing implementation pattern (proven effective)
+
+The most impactful optimization: K and V share the same smem buffer, and Q and O share the same smem buffer. This saves `kBlockN * kHeadDim * sizeof(half)` bytes (16KB for BN=64, HD=128).
+
+**K/V sharing requires pipeline reorder** to avoid data races between warps:
+
+```
+// Before (no sharing, 2 syncs/iter):
+sync → LOAD V → sync → GEMM QK → sync → softmax+PV → LOAD Knext
+
+// After (K/V sharing, 3 syncs/iter):
+sync → GEMM QK → sync(CRITICAL) → LOAD V(overwrites K) → sync → softmax+PV → LOAD Knext(overwrites V)
+//                ^^^^^^^^^^^^
+//                This sync is MANDATORY: prevents fast warps from overwriting
+//                K before slow warps finish reading it during GEMM QK.
+//                Without it → data race → max diff 0.065 (500x baseline error).
+```
+
+**Critical sync placement rules**:
+1. Must sync AFTER QK gemm, BEFORE V load (V overwrites K — all warps must be done reading K)
+2. Must sync AFTER V load, BEFORE PV gemm (all warps must see V data)
+3. K-next load AFTER PV gemm (V no longer needed after PV uses it)
+
+**Template parameter changes for K/V sharing**:
+```cpp
+// kernel_traits.h
+static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * sizeof(Element);  // NO *2!
+// In flash_fwd_kernel.h:
+Tensor sV = make_tensor(sK.data(), ...);  // NOT sK.data() + size(sK)!
+```
+
+**Q/O sharing** is built-in (no code changes needed):
+```cpp
+Tensor sO = make_tensor(sQ.data(), typename Kernel_traits::SmemLayoutO{});
+// sQ is consumed (last read during QK gemm), then sO overwrites in epilogue
+```
+
 ### SM70 vs Ampere/Hopper key differences
 | Feature | SM70 (V100) | SM80 (A100) | SM90 (H100) |
 |---------|-------------|-------------|-------------|
@@ -449,6 +537,87 @@ python <skill>/scripts/summarize.py \
 
 ---
 
+## Future optimization directions
+
+Based on empirical testing, the following remain unexplored or partially tested.
+
+### TileLang reference (external baseline)
+
+**TileLang Flash Attention** achieves **8.23ms** (41.7 TFLOPS) vs our **9.85ms** (34.9 TFLOPS) — **16.4% faster**.
+Source: `tests/ncu_analyse/tile_flash_attention.cu`
+
+TileLang's kernel configuration:
+| Parameter | TileLang (fast) | Our best |
+|-----------|----------------|----------|
+| Threads | **256** (8 warps) | 128 (4 warps) |
+| kBlockM | **128** | 64 |
+| kBlockN | 64 | 64 |
+| `__launch_bounds__` | (256, **1**) | (128, 3) |
+| Blocks/SM | **1** | 3 |
+| Warps/SM | **8** | 12 |
+| Smem addressing | **Hand-coded XOR swizzle in addr bits** | CUTE Swizzle<3,3,3> |
+| MMA interface | Direct `tl::mma_sync_sm70` | CUTE TiledMMA |
+| Grid (seqlen=4096, 40 heads) | **1280** blocks | 2560 blocks |
+| Q smem | 32KB (128×128) | 16KB (64×128) |
+| K smem | 8KB (64×128) | 16KB (64×128) |
+
+**Why TileLang wins — three compounding effects:**
+
+1. **kBlockM=128 halves the grid** (1280 vs 2560 blocks) → half the Q global memory reads → half the smem load traffic → L2 cache pressure cut in half. With kBlockM=64 and 2560 blocks all reading Q tiles, the V100's 6MB L2 cache must service 2x the requests. Larger tile = better cache behavior.
+
+2. **Hand-coded conflict-free smem addressing** — TileLang embeds XOR swizzle directly in the bit-manipulation of smem addresses (the `((a>>c)^b)&mask` pattern visible in the generated code). This eliminates bank conflicts at the hardware level without going through CUTE's Swizzle abstraction. CUTE's `Swizzle<3,3,3>` produces ~2.3-way load conflicts; TileLang's manual addressing produces near-zero.
+
+3. **No CUTE abstraction overhead** — Direct `mma_sync_sm70` calls, direct smem loads (uint2/uint4), direct gmem loads. CUTE's `tiled_copy`, `partition_S/D`, `retile_S/D` add compile-time complexity that can prevent the compiler from fully optimizing the generated PTX. The TileLang kernel is ~175 lines of flat code with everything inlined.
+
+**Net effect**: Lower occupancy (8 warps/SM vs 12) is MORE than compensated by:
+- 2× fewer global memory reads (half the Q blocks)
+- Zero bank conflicts on smem (vs 2.3-4.7 way)
+- Better compiler optimization of the simpler code
+
+### High-priority (aligned with TileLang findings)
+| Direction | Description | Risk | Expected gain |
+|-----------|-------------|------|---------------|
+| **kBlockM=128 + 256 threads** | Match TileLang's tile: 128×128 Q, 8 warps, 1-2 blocks/SM | High | 10-16% from reduced grid + better AI |
+| **Hand-written smem copy** | Bypass CUTE copy atoms for Q/K/V gmem→smem, use direct ldg+sts | High | Reduce bank conflicts to near-zero |
+| SmemLayoutAtomV separate | Use different swizzle for V vs Q/K layouts | Low | Reduce store bank conflicts (4.7-way) |
+
+### Medium-priority (tradeoffs involved)
+| Direction | Description | Risk | Notes |
+|-----------|-------------|------|-------|
+| kBlockM=32 + kBlockN=128 | Swap M/N aspect ratio | Medium | Different QK/PV balance |
+| Causal-specific kernel | Specialize for causal vs non-causal | Medium | Reduces regs for hot path (non-causal) |
+| kBlockM=128 CUTE adaptation | Keep CUTE but change template params | High | Smem 48KB→2 blocks; must verify kWarpRows=16 works with 256 threads |
+
+### Lessons from failed attempts (2026-05-08 optimization session)
+
+| Attempt | Result | Root Cause |
+|---------|--------|------------|
+| `-maxrregcount=128` | **4.2x slower** (9.2→38.4ms) | Forces 84-96 reg spill to local mem. Natural 168 regs is optimal — only 36 regs spill naturally. DRAM saturates (2.45→77.93%) from spill traffic. |
+| kBlockM=32 (from 64) | **5.5x slower** (9.2→51.2ms) | Grid doubles (2560→5120), K/V reads double (5.3→10.5GB), L2 hit rate collapses (97.5→80.4%). Occupancy gain (25%) cannot compensate. |
+| kSwizzle=2 (from 3) | No effect | Bank conflicts unchanged. Swizzle<3,3,3> already near-optimal for kBlockM=64. |
+| Smem column padding | Compile error | CUTE Stride Divisibility Condition. Cannot pad within tile_to_shape atoms. |
+| pv_gemm_rs + log2f LSE | Precision degraded (max diff 0.043→0.120) | FMA ordering change + log2f/logf mismatch accumulates across 64 rescaling steps. |
+
+### Low-priority (hardware limited)
+| Direction | Issue |
+|-----------|-------|
+| Async copy (cp.async) | SM70 does not support |
+| ldmatrix/stmatrix | SM70 does not support |
+| FP16 MMA accumulator | Volta m8n8k4 only has FP32 accumulator |
+| L1/smem carveout tuning | V100 only has 96/32 or 0/128 split |
+
+### Key design principles (from empirical optimization — UPDATED)
+
+1. **Arithmetic intensity > occupancy**: kBlockM=128 with 8 warps/SM beats kBlockM=64 with 12 warps/SM. Larger tiles reduce grid count → reduce global memory traffic → improve L2 residency. This is the TileLang lesson.
+
+2. **CUTE abstraction has a cost on V100**: The tiled_copy + swizzle abstraction prevents the compiler from fully optimizing smem access patterns. Direct smem addressing with embedded swizzle can eliminate bank conflicts that CUTE cannot.
+
+3. **Grid count matters for L2 pressure**: Fewer blocks = fewer unique Q reads = better L2 hit rate. kBlockM directly controls grid size. On V100's small 6MB L2, this is a first-order effect.
+
+4. **Register spill is the only hard kill switch**: Natural 168 regs with minor spill (36 regs) is fine. Forced 128 regs with 96-reg spill destroys performance. Respect the compiler's natural register allocation.
+
+5. **Sync overhead dominates loop count**: Doubling outer loop iterations (BlockN=32 vs 64) costs more than the occupancy gain. Minimize sync barriers.
+
 ## Quick-start for manual analysis
 
 When a user provides an ncu profile output and asks for analysis, use this diagnostic flow:
@@ -456,50 +625,47 @@ When a user provides an ncu profile output and asks for analysis, use this diagn
 ### SM70 FA Diagnostic Decision Tree
 
 ```
-1. Check occupancy → < 25% → register or smem pressure
+1. Check DRAM throughput → > 5% → REGISTER SPILL
+   └── Fix: reduce register pressure (Is_Q_in_regs, BlockM, launch_bounds)
+
+2. Check occupancy → < 15% → register or smem pressure
    ├── Register pressure (≥200 regs/thread)
-   │   ├── Try: reduce kWarpRows (→ smaller C-fragment → fewer regs)
-   │   ├── Try: reduce kCtaWarps (fewer threads → more regs per but fewer total)
-   │   └── Try: float→half accumulator precision where safe
-   └── Smem pressure (≥90 KB)
-       ├── Try: reduce kBlockKSmem (32 vs 64)
-       ├── Try: reduce kBlockM (64 vs 128)
-       └── Try: Share Q/K smem (if not already)
+   │   ├── Try: __launch_bounds__ to control compiler
+   │   ├── Try: reduce kWarpRows (smaller acc_o, acc_s fragments)
+   │   └── SKIP: Is_Q_in_regs=true (causes massive DRAM spill on V100)
+   └── Smem pressure (≥80 KB)
+       ├── Try: K/V smem sharing (proven - saves kBlockN*kHeadDim)
+       ├── Try: Q/O smem sharing (built-in)
+       └── Try: reduce kBlockN (but mind 2x loop overhead)
 
-2. Check bank conflict % → > 30% → swizzle or layout issue
+3. Check bank conflict % → > 30% → swizzle or layout issue
    ├── Load bank conflicts high
-   │   ├── Try: change kSwizzle (2→3 or 3→2)
-   │   ├── Try: change SmemLayoutAtomQ base layout
-   │   └── Try: pad smem by 8 elements per row
-   └── Store bank conflicts high
-       └── Try: different write swizzle pattern
+   │   ├── kSwizzle=3 is identity on V100 (= no swizzle)
+   │   ├── Try: different swizzle xor pattern
+   │   └── SKIP: Shape<8→16> in SmemLayoutAtomQ (OOB bug)
+   └── Store bank conflicts high (4.6-4.8 way typical)
+       └── Source: MMA→smem epilogue writes, not gmem→smem loads
+       └── Try: separate SmemLayoutAtomV or STS ordering
 
-3. Check MIO throttle % → > 30% → shared memory pipe saturated
-   ├── Try: reduce shared store/load frequency
-   ├── Try: combine smem operations (wider loads)
-   └── Try: use register intermediates more aggressively
+4. Check IPC → benchmark against tile size
+   ├── kWarpRows=8 → IPC ~1.32 (low per-warp work)
+   ├── kWarpRows=16 → IPC ~1.64 (2x arithmetic intensity) ✓
+   └── SKIP: kWarpRows=32 → reg pressure too high
 
-4. Check SM throughput → < 50% → stalls or low occupancy
-   ├── Eligible warps/sched < 1.0 → stalls dominate
-   │   ├── long_scoreboard → global load latency → pipeline better
-   │   ├── short_scoreboard → smem latency → ILP/unroll
-   │   ├── barrier → sync overhead → reduce sync count
-   │   └── mio_throttle → smem pipe → reduce smem traffic
-   └── Eligible warps/sched ≥ 1.0 but SM util low → occupancy issue (see #1)
-
-5. Check IPC → < 1.0 on matmul → TC not fully utilized
-   ├── Verify HMMA instructions present in SASS
-   ├── Check if fragment conversion overhead dominates
-   └── MMA atom may need reconfiguration
+5. Check outer loop metrics → isolate sync overhead
+   ├── BlockN=64: 64 iterations, each sync costs ~20us
+   ├── BlockN=32: 128 iterations, sync overhead dominates (+9.9% total)
+   └── Guideline: prefer larger tiles, fewer iterations
 ```
 
 ### SM70 FA Profile Hotspot Map
 
 | Bottleneck | Primary Axis | Priority Methods |
 |------------|-------------|------------------|
+| DRAM > 5% | register | **EMERGENCY**: register spill. Revert recent reg-heavy changes |
 | Bank conflicts > 40% | memory | `bank_conflict_swizzle` (P1), `pad_smem_layout` (P2) |
 | Occupancy < 15% | compute | `reduce_register_pressure` (P1), `tune_cta_warps` (P2) |
-| MIO throttle > 40% | latency | `widen_smem_access` (P1), `reduce_sync_points` (P2) |
-| Eligible warps < 0.5 | latency | `async_copy_emulation` (P1), `pipeline_depth` (P2) |
-| TC utilization < 20% | compute | `increase_tile_size` (P1), `warp_specialization` (P2) |
-| SM util < 40% + fine IPC | compute | `increase_occupancy` (P1), `thread_coarsening` (P2) |
+| MIO throttle > 40% | latency | `increase_tile_size` (P1), `reduce_sync_points` (P2) |
+| Eligible warps < 0.5 | latency | `pipeline_depth` (P1), larger BlockM (P2) |
+| TC utilization < 20% | compute | `increase_tile_size` (P1) — BlockM=64 verified |
+| Sync count > 100 | latency | Increase BlockN (reduce outer loop iterations) |

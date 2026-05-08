@@ -187,7 +187,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 64;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
@@ -195,7 +195,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 96;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
@@ -203,7 +203,8 @@ template<bool Is_causal>
 void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 128;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_dropout, Is_causal>(params, stream);
+        // 8-warps: 256 threads, kWarpRows=8, smem=32KB, target 2 blocks/SM (16 warps)
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
