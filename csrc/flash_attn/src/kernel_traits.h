@@ -170,7 +170,7 @@ struct Flash_fwd_kernel_traits  {
     using SmemCopyAtomOaccum = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>;
 
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
-    static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
+    static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * sizeof(Element);
     static constexpr int kSmemPSize = size(SmemLayoutP{}) * sizeof(Element);
     static constexpr int kSmemSize = kSmemQSize + kSmemKVSize;
     static_assert(kSmemSize <= 96 * 1024, "kSmemSize must fit within the 96KB shared memory limit on SM70");

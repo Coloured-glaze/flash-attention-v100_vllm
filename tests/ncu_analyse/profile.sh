@@ -26,6 +26,6 @@ ncu --import profile_out.ncu-rep --csv | head -n 200 > profile_out_${time}.csv \
 && \
 python compact_ncu.py profile_out_${time}.csv >> profile_out_${time}_${git_commit}.txt \
 && \
-echo "profile analysis done, result saved to profile_out_${time}_${git_commit}.txt"
+echo "profile analysis done.\n result saved to ${PWD}/${file_name}${time}_${git_commit}.txt"
 
 

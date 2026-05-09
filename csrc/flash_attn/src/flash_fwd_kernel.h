@@ -173,7 +173,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
-    Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutKV{});
+    Tensor sV = make_tensor(sK.data(), typename Kernel_traits::SmemLayoutKV{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
     Tensor sQ_warp = local_tile(sQ, Shape<Int<kWarpRows>, Int<kHeadDim>>{},
@@ -194,6 +194,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
     Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
+    Tensor tKrK = make_fragment_like(tKsK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
 
@@ -263,6 +264,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block), tKsK, tKVcKV, tKVpKV,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
 
+    // Prefetch next K to register buffer
+    if (n_block > n_block_min) {
+        FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
+    }
+
     // Is_Q_in_regs == true (disabled: causes register spill to DRAM)
     /*
     __syncthreads();
@@ -295,7 +301,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         clear(acc_s);
         __syncthreads();
 
-        // Advance gV
+        // reg → smem: K for this iteration (sK from prologue for masking_step==0)
+        if (masking_step > 0) {
+            #pragma unroll
+            for (int i = 0; i < size(tKrK); ++i) { tKsK(i) = tKrK(i); }
+        }
+        __syncthreads();
+
+        // Q*K GEMM reads sK
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
+            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            smem_thr_copy_Q, smem_thr_copy_K
+        );
+        __syncthreads();  // finish reading sK before V overwrites
+
+        // Load V, overwriting K's smem
         if (masking_step > 0) {
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
         } else {
@@ -305,17 +325,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             );
         }
 
-        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
-            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
-            smem_thr_copy_Q, smem_thr_copy_K
-        );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
         __syncthreads();
+
+        // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
         }
 
         mask.template apply_mask<Is_causal, Is_even_MN>(
@@ -365,19 +383,31 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kWarpRows>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
         __syncthreads();
-        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
 
+        // reg → smem: K for this iteration
+        #pragma unroll
+        for (int i = 0; i < size(tKrK); ++i) { tKsK(i) = tKrK(i); }
+        __syncthreads();
+
+        // Q*K GEMM reads sK
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
+        __syncthreads();  // finish reading sK before V overwrites
+
+        // Load V, overwriting K's smem
+        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
         __syncthreads();
+
+        // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
         }
 
         mask.template apply_mask</*Causal_mask=*/false>(
@@ -607,7 +637,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
-    Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutKV{});
+    Tensor sV = make_tensor(sK.data(), typename Kernel_traits::SmemLayoutKV{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
     Tensor sQ_warp = local_tile(sQ, Shape<Int<kWarpRows>, Int<kHeadDim>>{},
@@ -634,6 +664,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     Tensor tKgK = make_tensor(tKgK_.data(), reshape_thread_tile(tKgK_.layout()));
     Tensor tKsK = make_tensor(tKsK_.data(), reshape_thread_tile(tKsK_.layout()));
+    Tensor tKrK = make_fragment_like(tKsK);
     Tensor tVgV = make_tensor(tVgV_.data(), reshape_thread_tile(tVgV_.layout()));
     Tensor tVsV = make_tensor(tVsV_.data(), reshape_thread_tile(tVsV_.layout()));
 
@@ -864,6 +895,19 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV,
                                                  binfo.actual_seqlen_k - n_block * kBlockN);
 
+    // Prefetch next K to register buffer
+    if (n_block > n_block_min) {
+        auto saved_kgk = tKgK.data();
+        if (block_table == nullptr) {
+            tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+        } else {
+            tKgK.data() = gK.data() + flash::resolve_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block - 1, params.page_block_size,
+                block_table, params.k_batch_stride, params.k_row_stride);
+        }
+        FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKrK, tKVcKV, tKVpKV);
+        tKgK.data() = saved_kgk;
+    }
+
     // Is_Q_in_regs == true (disabled: causes register spill to DRAM)
     /*
     __syncthreads();
@@ -895,7 +939,21 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         clear(acc_s);
         __syncthreads();
 
-        // Advance gV
+        // reg → smem: K for this iteration (sK from prologue for masking_step==0)
+        if (masking_step > 0) {
+            #pragma unroll
+            for (int i = 0; i < size(tKrK); ++i) { tKsK(i) = tKrK(i); }
+        }
+        __syncthreads();
+
+        // Q*K GEMM reads sK
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
+            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            smem_thr_copy_Q, smem_thr_copy_K
+        );
+        __syncthreads();  // finish reading sK before V overwrites
+
+        // Load V, overwriting K's smem
         if (masking_step > 0) {
             if (block_table == nullptr) {
                 tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
@@ -911,24 +969,23 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             );
         }
 
-        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
-            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
-            smem_thr_copy_Q, smem_thr_copy_K
-        );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
         __syncthreads();
+
+        // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            // Advance gK
+            auto saved_kgk = tKgK.data();
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
             } else {
                 tKgK.data() = gK.data() + flash::resolve_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block - 1, params.page_block_size,
                     block_table, params.k_batch_stride, params.k_row_stride);
             }
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKrK, tKVcKV, tKVpKV);
+            tKgK.data() = saved_kgk;
         }
 
         mask.template apply_mask<Is_causal, Is_even_MN>(
@@ -965,7 +1022,19 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         clear(acc_s);
         __syncthreads();
 
-        // Advance gV
+        // reg → smem: K for this iteration
+        #pragma unroll
+        for (int i = 0; i < size(tKrK); ++i) { tKsK(i) = tKrK(i); }
+        __syncthreads();
+
+        // Q*K GEMM reads sK
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
+            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            smem_thr_copy_Q, smem_thr_copy_K
+        );
+        __syncthreads();  // finish reading sK before V overwrites
+
+        // Load V, overwriting K's smem
         if (block_table == nullptr) {
             tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
         } else {
@@ -974,24 +1043,23 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         }
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tVgV, tVsV, tKVcKV, tKVpKV);
 
-        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
-            acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
-            smem_thr_copy_Q, smem_thr_copy_K
-        );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
         __syncthreads();
+
+        // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            // Advance gK
+            auto saved_kgk = tKgK.data();
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
             } else {
                 tKgK.data() = gK.data() + flash::resolve_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block - 1, params.page_block_size,
                     block_table, params.k_batch_stride, params.k_row_stride);
             }
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKrK, tKVcKV, tKVpKV);
+            tKgK.data() = saved_kgk;
         }
 
         mask.template apply_mask</*Causal_mask=*/false>(
