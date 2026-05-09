@@ -263,7 +263,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block), tKsK, tKVcKV, tKVpKV,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
 
-    // Is_Q_in_regs == true
+    // Is_Q_in_regs == true (disabled: causes register spill to DRAM)
     /*
     __syncthreads();
     Tensor tSrQ_copy_view = smem_thr_copy_Q.retile_D(tSrQ);
@@ -304,7 +304,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
             );
         }
-        //__syncthreads();
 
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
@@ -314,14 +313,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
+        __syncthreads();
+        if (n_block > n_block_min) {
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+        }
+
         mask.template apply_mask<Is_causal, Is_even_MN>(
             acc_s, n_block * kBlockN, m_block * kBlockM + mma_group_id * kWarpRows, 0
         );
 
         __syncthreads();
-        if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
-        }
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
@@ -378,7 +379,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         if (n_block > n_block_min) {
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
         }
-        
+
         mask.template apply_mask</*Causal_mask=*/false>(
             acc_s, n_block * kBlockN, m_block * kBlockM + mma_group_id * kWarpRows, 0
         );
@@ -863,6 +864,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV,
                                                  binfo.actual_seqlen_k - n_block * kBlockN);
 
+    // Is_Q_in_regs == true (disabled: causes register spill to DRAM)
+    /*
+    __syncthreads();
+    Tensor tSrQ_copy_view_splitkv = smem_thr_copy_Q.retile_D(tSrQ);
+    cute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view_splitkv);
+    */
+
     clear(acc_o);
 
     FLASH_NAMESPACE::Softmax<kWarpRows> softmax;
@@ -903,23 +911,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             );
         }
 
-        FLASH_NAMESPACE::gemm(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
-        // if (cute::thread0()) { print(acc_s); }
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
-        mask.template apply_mask<Is_causal, Is_even_MN>(
-            acc_s, n_block * kBlockN, m_block * kBlockM + mma_group_id * kWarpRows, 0
-        );
-
         __syncthreads();
-        // if (tidx == 0 && blockIdx.y == 0 && blockIdx.z == 0) { print(tVsV); }
-        // __syncthreads();
-
         if (n_block > n_block_min) {
             // Advance gK
             if (block_table == nullptr) {
@@ -931,11 +931,16 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV);
         }
 
+        mask.template apply_mask<Is_causal, Is_even_MN>(
+            acc_s, n_block * kBlockN, m_block * kBlockM + mma_group_id * kWarpRows, 0
+        );
+
+        __syncthreads();
+
         // We have key_padding_mask so we'll need to Check_inf
         masking_step == 0
             ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local || !Is_even_MN>(acc_s, acc_o, params.scale_softmax_log2)
             : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local || !Is_even_MN>(acc_s, acc_o, params.scale_softmax_log2);
-        // if (cute::thread0()) { print(scores_max); print(scores_sum); print(scores); }
 
         // Convert acc_s from fp32 to fp16
         Tensor rP = make_tensor<Element>(acc_s.layout());
@@ -959,6 +964,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kWarpRows>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
         __syncthreads();
+
         // Advance gV
         if (block_table == nullptr) {
             tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
@@ -966,10 +972,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             tVgV.data() = gV.data() + flash::resolve_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block, params.page_block_size,
                 block_table, params.v_batch_stride, params.v_row_stride);
         }
-
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tVgV, tVsV, tKVcKV, tKVpKV);
 
-        FLASH_NAMESPACE::gemm(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );

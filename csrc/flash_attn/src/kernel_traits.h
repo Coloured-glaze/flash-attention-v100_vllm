@@ -132,11 +132,10 @@ struct Flash_fwd_kernel_traits  {
     static_assert(kMmaThreads % 32 == 0, "SM70 TiledMma must use a whole number of warps");
     static_assert(kNThreads % kMmaThreads == 0, "threadblock threads must be divisible by TiledMma threads");
     static constexpr bool Share_Q_K_smem = false;
-    static constexpr bool Is_Q_in_regs = false;
+    static constexpr bool Is_Q_in_regs = false;  // P4 reverted: true causes register spill (168 regs→DRAM)
 
     using SmemLayoutAtomQ = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
-                    // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,
                            Stride<Int<kBlockKSmem>, _1>>{}));
     using SmemLayoutQ = decltype(tile_to_shape(
