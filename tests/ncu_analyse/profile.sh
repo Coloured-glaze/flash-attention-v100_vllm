@@ -1,14 +1,15 @@
 
-time=$(date '+%F_%H%M')
+time=$(date '+%y%m%d_%H%M')
 git_commit=$(git rev-parse --short HEAD)
+file_name="prof"
 
-echo "git commit: $(git rev-parse HEAD)" > profile_out_${time}_${git_commit}.txt
+echo "git commit: $(git rev-parse HEAD)" > ${file_name}_${time}_${git_commit}.txt
 
 echo "start benchmark at ${time}" \
 && \
 compute-sanitizer --print-limit 1 python test_vllm_flash_attn.py --flops --flops_num 5 \
 && \
-python test_vllm_flash_attn.py --flops --profile --use_sdpa >> profile_out_${time}_${git_commit}.txt \
+python test_vllm_flash_attn.py --flops --profile --use_sdpa >> ${file_name}_${time}_${git_commit}.txt \
 && \
 echo "benchmark done at ${time}"
 
@@ -22,10 +23,10 @@ ncu -f --target-processes all --set full \
     -o "profile_out" \
     python test_vllm_flash_attn.py --flops \
 && \
-ncu --import profile_out.ncu-rep --csv | head -n 200 > profile_out_${time}.csv \
+ncu --import profile_out.ncu-rep --csv | head -n 200 > ${file_name}_${time}.csv \
 && \
-python compact_ncu.py profile_out_${time}.csv >> profile_out_${time}_${git_commit}.txt \
+python compact_ncu.py ${file_name}_${time}.csv >> ${file_name}_${time}_${git_commit}.txt \
 && \
-echo "profile analysis done.\n result saved to ${PWD}/${file_name}${time}_${git_commit}.txt"
+echo "profile analysis done.\n result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
 
 

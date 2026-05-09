@@ -1,18 +1,9 @@
-#!/bin/bash
 
-# source .venv/bin/activate
+if [ -n "$1" ]; then
+  export FA_HDIM=$1
+  echo "FA_HDIM: ${FA_HDIM}"
+fi
 
-# cd /workspace/WuTeachingAI/flash-attention-v100/
-
-# export CUDA_HOME=/usr/local/cuda-12.8
-# export PATH=/usr/local/cuda-12.8/bin:$PATH
-# export D_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH
-# export PATH=/workspace/WuTeachingAI/conda3/bin:$PATH
-
-# export CC=$(which gcc-11)
-# export CXX=$(which g++-11)
-
-# $CXX --version
 nvcc --version
 
 # Install ninja and sccache if not present
