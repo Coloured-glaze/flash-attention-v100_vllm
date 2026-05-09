@@ -364,8 +364,8 @@ __forceinline__ __device__ auto convert_layout_C_to_A_v2(
             ((target_col >> 5) << (3 + kRowGroupBits));
 
         if constexpr (sizeof(Element) == 2) {
-            Element el_lo = static_cast<Element>(static_cast<float>(rP(base_idx + 0)));
-            Element el_hi = static_cast<Element>(static_cast<float>(rP(base_idx + 2)));
+            Element el_lo = rP(base_idx + 0);
+            Element el_hi = rP(base_idx + 2);
 
             // 使用纯 CUDA 原生的寄存器打包方式
             uint32_t packed;

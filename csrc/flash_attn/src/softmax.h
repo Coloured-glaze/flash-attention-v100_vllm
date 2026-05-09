@@ -72,11 +72,7 @@ __forceinline__ __device__ void scale_apply_exp2(Tensor<Engine0, Layout0> &tenso
         const float max_scaled = max(mi) == -INFINITY ? 0.f : max(mi) * (Scale_max ? scale : float(M_LOG2E));
         #pragma unroll
         for (int ni = 0; ni < size<1>(tensor); ++ni)  {
-#ifdef UNFUSE_FMA
-            tensor(mi, ni) = exp2f(__fmul_rn(tensor(mi, ni), scale) - max_scaled);
-#else
-            tensor(mi, ni) = exp2f(tensor(mi, ni) * scale - max_scaled);
-#endif
+            tensor(mi, ni) = exp2f(__fmaf_rn(tensor(mi, ni), scale, -max_scaled));
         }
     }
 }

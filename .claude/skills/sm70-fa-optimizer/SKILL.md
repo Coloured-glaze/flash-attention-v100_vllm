@@ -596,7 +596,6 @@ TileLang's kernel configuration:
 | kBlockM=32 (from 64) | **5.5x slower** (9.2→51.2ms) | Grid doubles (2560→5120), K/V reads double (5.3→10.5GB), L2 hit rate collapses (97.5→80.4%). Occupancy gain (25%) cannot compensate. |
 | kSwizzle=2 (from 3) | No effect | Bank conflicts unchanged. Swizzle<3,3,3> already near-optimal for kBlockM=64. |
 | Smem column padding | Compile error | CUTE Stride Divisibility Condition. Cannot pad within tile_to_shape atoms. |
-| pv_gemm_rs + log2f LSE | Precision degraded (max diff 0.043→0.120) | FMA ordering change + log2f/logf mismatch accumulates across 64 rescaling steps. |
 
 ### Low-priority (hardware limited)
 | Direction | Issue |

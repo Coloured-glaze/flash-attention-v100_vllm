@@ -14,9 +14,11 @@
 namespace FLASH_NAMESPACE {
 
 // Use a macro to clean up kernel definitions
+// 128 threads, min 2 blocks/SM
 #define DEFINE_FLASH_FORWARD_KERNEL(kernelName, ...) \
 template<typename Kernel_traits, __VA_ARGS__> \
-__global__ void kernelName(__grid_constant__ const Flash_fwd_params params)
+__global__ __launch_bounds__(128, 2) \ 
+void kernelName(__grid_constant__ const Flash_fwd_params params)
 
 DEFINE_FLASH_FORWARD_KERNEL(flash_fwd_kernel, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax) {
     static_assert(!(Is_causal && Is_local)); // Enforce constraints
@@ -187,7 +189,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 64;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 128, 4, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
@@ -195,7 +197,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 96;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
