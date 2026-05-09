@@ -17,7 +17,7 @@ namespace FLASH_NAMESPACE {
 // 128 threads, min 2 blocks/SM
 #define DEFINE_FLASH_FORWARD_KERNEL(kernelName, ...) \
 template<typename Kernel_traits, __VA_ARGS__> \
-__global__ __launch_bounds__(128, 2) \ 
+__global__ __launch_bounds__(128, 2) \
 void kernelName(__grid_constant__ const Flash_fwd_params params)
 
 DEFINE_FLASH_FORWARD_KERNEL(flash_fwd_kernel, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax) {

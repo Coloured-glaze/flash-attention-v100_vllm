@@ -3,7 +3,7 @@ time=$(date '+%y%m%d_%H%M')
 git_commit=$(git rev-parse --short HEAD)
 file_name="prof"
 
-echo "git commit: $(git rev-parse HEAD)" > ${file_name}_${time}_${git_commit}.txt
+echo "git commit: ${git_commit}" > ${file_name}_${time}_${git_commit}.txt
 
 echo "start benchmark at ${time}" \
 && \
