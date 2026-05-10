@@ -1,13 +1,21 @@
+import platform; 
+system= platform.system().lower()
 
 try:
-    from vllm_flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func # from vllm_flash_attn.flash_attn_interface import ...
 except ImportError as e:
     raise ImportError("VLLM Flash Attention not found") from e
 
-try:
-    from tile_flash_attn import flashattn, ref_program, do_bench
-except ImportError as e:
-    raise ImportError("Tile Flash Attention not found") from e
+if system == "linux":
+    try:
+        from tile_flash_attn import flashattn, do_bench
+    except ImportError as e:
+        print(f"Tile Flash Attention not found, {e}")
+    from triton.testing import do_bench
+    # def benchmark(f, *args, **kwargs):
+    #     return (do_bench(lambda: f(*args, **kwargs), return_mode="mean") * 1e3)  # return in us
+else :
+    from triton.testing import do_bench
 
 import torch, math, os
 import torch.nn.functional as F
@@ -15,16 +23,20 @@ import torch.nn.functional as F
 import argparse
 
 
-def ref_program_fa(query, key, value):
+def ref_program(Q, K, V, mask, is_causal):
+    return torch.nn.functional.scaled_dot_product_attention(Q, K, V, attn_mask=mask, dropout_p=0.0, is_causal=is_causal)
+
+def ref_program_fa(query, key, value, causal=False):
     return flash_attn_func(
-        query.permute(0,2,1,3), key.permute(0,2,1,3), value.permute(0,2,1,3)).permute(0,2,1,3)
+        query.permute(0,2,1,3), key.permute(0,2,1,3), value.permute(0,2,1,3),
+        causal=causal
+        ).permute(0,2,1,3)
 
 def manual_attn(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
     att = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
     att = torch.nn.functional.softmax(att, dim=-1)
     y = torch.matmul(att, v)
     return y
-
 
 # region torch profile test
 def torch_profile(

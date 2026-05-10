@@ -358,10 +358,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local>(acc_s, acc_o, params.scale_softmax_log2)
             : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
-        // Convert acc_s from fp32 to fp16 without assuming a contiguous fragment layout.
+        // Convert acc_s from fp32 to fp16 using vectorized copy
         Tensor rP = make_tensor<Element>(acc_s.layout());
-        #pragma unroll
-        for (int i = 0; i < size(rP); ++i) { rP(i) = Element(acc_s(i)); }
+        cute::copy(acc_s, rP);
         int block_row_idx = m_block * kBlockRowStride + mma_group_id;
         int block_col_idx = n_block * (kBlockN / 32);
         if constexpr (Return_softmax) {
@@ -436,9 +435,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         );
         softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/(Is_local || !Is_even_MN)>(acc_s, acc_o, params.scale_softmax_log2);
 
+        // Convert acc_s from fp32 to fp16 using vectorized copy
         Tensor rP = make_tensor<Element>(acc_s.layout());
-        #pragma unroll
-        for (int i = 0; i < size(rP); ++i) { rP(i) = Element(acc_s(i)); }
+        cute::copy(acc_s, rP);
         int block_row_idx = m_block * kBlockRowStride + mma_group_id;
         int block_col_idx = n_block * (kBlockN / 32);
         if constexpr (Return_softmax) {
@@ -1119,9 +1118,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
         softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
+        // Convert acc_s from fp32 to fp16 using vectorized copy
         Tensor rP = make_tensor<Element>(acc_s.layout());
-        #pragma unroll
-        for (int i = 0; i < size(rP); ++i) { rP(i) = Element(acc_s(i)); }
+        cute::copy(acc_s, rP);
 
         auto tOrP = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
             thr_mma, p_layout_warp, rP, smem_thr_copy_Q, lane_id

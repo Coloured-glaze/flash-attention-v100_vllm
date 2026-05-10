@@ -12,16 +12,6 @@ if ! command -v ninja &> /dev/null; then
     pip install ninja -q 
 fi
 
-if ! command -v sccache &> /dev/null; then
-    echo "Installing sccache..."
-    pip install sccache -q 
-fi
-
-ccache -M 20G
-
-# Configure sccache
-sccache --start-server
-
 echo nproc=$(nproc)
 
 free -m
@@ -30,7 +20,24 @@ export MAX_JOBS=12
 export NVCC_THREADS=2
 # export CMAKE_BUILD_TYPE=Release
 
-target_whl=dist/vllm_flash_attn-2.7.2.post1-cp312-cp312-linux_x86_64.whl
+system=$(python -c "import platform; print(platform.system().lower())")
+
+target_whl_linux=dist/vllm_flash_attn-2.7.2.post1-cp31*-cp31*-linux_x86_64.whl
+target_whl_win=dist/vllm_flash_attn-2.7.2.post1-cp31*-cp31*-win_amd64.whl
+
+if [ "${system}" == "windows" ]; then
+  target_whl=${target_whl_win}
+else
+  target_whl=${target_whl_linux}
+
+  ccache -M 20G
+  if ! command -v sccache &> /dev/null; then
+      echo "Installing sccache..."
+      pip install sccache -q 
+  fi
+
+  sccache --start-server # Configure sccache
+fi
 
 rm ${target_whl} 2>&1 || true
 
@@ -43,4 +50,6 @@ echo "start build at ${time} -- end build at $(date '+%F_%H-%M-%S')" && \
 ls -lh ${target_whl} && \
   pip uninstall vllm_flash_attn -y && pip install ${target_whl} 
 
-sccache --stop-server
+if [ "${system}" != "windows" ]; then
+  sccache --stop-server
+fi

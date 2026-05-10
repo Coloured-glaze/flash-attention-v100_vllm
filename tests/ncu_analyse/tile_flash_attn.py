@@ -141,7 +141,7 @@ def flashattn(
         for i, j in T.Parallel(block_M, block_N):
             val = acc_s[i, j]
             m = scores_max[i]
-            # 同样，处理 -inf 输入
+            # 处理 -inf 输入
             acc_s[i, j] = T.if_then_else(val == -T.infinity(accum_dtype), 0.0, T.exp2((val - m) * scale_log2e))
 
         T.fill(scores_sum, 0)
@@ -275,6 +275,3 @@ def flashattn(
 
     return main
 
-
-def ref_program(Q, K, V, mask, is_causal):
-    return torch.nn.functional.scaled_dot_product_attention(Q, K, V, attn_mask=mask, dropout_p=0.0, is_causal=is_causal)

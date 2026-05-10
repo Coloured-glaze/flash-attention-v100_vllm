@@ -1,9 +1,8 @@
 # Copyright (c) 2023, Tri Dao.
 
-from typing import Optional, Union, Tuple, List
+from typing import Optional, Tuple, List
 
 import torch
-import torch.nn as nn
 
 # isort: off
 # We need to import the CUDA kernels after importing torch

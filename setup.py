@@ -33,7 +33,7 @@ envs = Envs(
     NVCC_THREADS=os.getenv("NVCC_THREADS"),
     VLLM_TARGET_DEVICE=os.getenv("VLLM_TARGET_DEVICE", "cuda"),
     CMAKE_BUILD_TYPE=os.getenv("CMAKE_BUILD_TYPE"),
-    FA_HDIM=os.getenv("FA_HDIM", ""),
+    FA_HDIM=os.getenv("FA_HDIM", ""), # 指定编译FA的头维度，快速测试内核，例如 export FA_HDIM=128 , export FA_HDIM=32,64 
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
