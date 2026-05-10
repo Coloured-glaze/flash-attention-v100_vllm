@@ -75,7 +75,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const int mma_group_id = tidx / Kernel_traits::kMmaThreads;
     const int mma_thread_id = tidx % Kernel_traits::kMmaThreads;
     //const int warp_id_in_group = mma_thread_id / 32;
-    const int lane_id = tidx % 32;
+    //const int lane_id = tidx % 32;
 
     auto seed_offset = at::cuda::philox::unpack(params.philox_args);
     FLASH_NAMESPACE::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
@@ -187,6 +187,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor gP_warp = local_tile(gP, Shape<Int<kWarpRows>, Int<kBlockN>>{},
                                 make_coord(mma_group_id, 0));
 
+    Tensor sP = make_tensor(sV.data() + size(sV), typename Kernel_traits::SmemLayoutP{});
+    Tensor sP_warp = local_tile(sP, Shape<Int<kWarpRows>, Int<kBlockN>>{},
+                                make_coord(mma_group_id, 0));
+
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
 
@@ -209,9 +213,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     Tensor tSgS  = thr_mma.partition_C(gP_warp);
 
+    Tensor tOsP  = thr_mma.partition_A(sP_warp);                            // (MMA,MMA_M,MMA_K)
+    Tensor tOrP  = thr_mma.partition_fragment_A(sP_warp);                   // (MMA,MMA_M,MMA_K)
+
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kWarpRows>, Int<kHeadDim>>{});  // MMA, MMA_M, MMA_K
     Tensor caccO = make_identity_tensor(Shape<Int<kWarpRows>, Int<kHeadDim>>{});                 // (BLK_M, BLK_K) -> (row, col)
     Tensor taccOcO = thr_mma.partition_C(caccO);                                                // (MMA, MMA_M, MMA_K) -> (row, col)
+    
+    Tensor caccP = make_identity_tensor(Shape<Int<kWarpRows>, Int<kBlockN>>{});
+    Tensor taccPcO = thr_mma.partition_C(caccP);
 
     //
     // Copy Atom retiling
@@ -220,6 +230,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(mma_thread_id);
     Tensor tSsQ = smem_thr_copy_Q.retile_S(tOsQ);
+    Tensor tSsP = smem_thr_copy_Q.retile_S(tOsP);
 
     auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(mma_thread_id);
@@ -366,10 +377,20 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kBlockRowStride);
         }
 
-        auto tOrP = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
-            thr_mma, p_layout_warp, rP, smem_thr_copy_Q, lane_id
+        #pragma unroll
+        for (int i = 0; i < size(rP); ++i) {
+            const int row_local = get<0>(taccPcO(i));
+            const int col = get<1>(taccPcO(i));
+            const int row_global = mma_group_id * kWarpRows + row_local;
+            sP(row_global, col) = rP(i);
+        }
+        __syncthreads();
+
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
+            acc_o, tOrP, tOrVt, tSsP, tOsVt, tiled_mma, 
+            smem_tiled_copy_Q, smem_tiled_copy_V,
+            smem_thr_copy_Q, smem_thr_copy_V
         );
-        FLASH_NAMESPACE::gemm_rs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
 
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
@@ -433,10 +454,20 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kBlockRowStride);
         }
 
-        auto tOrP = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
-            thr_mma, p_layout_warp, rP, smem_thr_copy_Q, lane_id
+        #pragma unroll
+        for (int i = 0; i < size(rP); ++i) {
+            const int row_local = get<0>(taccPcO(i));
+            const int col = get<1>(taccPcO(i));
+            const int row_global = mma_group_id * kWarpRows + row_local;
+            sP(row_global, col) = rP(i);
+        }
+        __syncthreads();
+
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
+            acc_o, tOrP, tOrVt, tSsP, tOsVt, tiled_mma, 
+            smem_tiled_copy_Q, smem_tiled_copy_V,
+            smem_thr_copy_Q, smem_thr_copy_V
         );
-        FLASH_NAMESPACE::gemm_rs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
     }
 
     // Epilogue
@@ -649,6 +680,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor p_layout_warp = local_tile(p_layout_tensor, Shape<Int<kWarpRows>, Int<kBlockN>>{},
                                       make_coord(mma_group_id, 0));
 
+    Tensor sP = make_tensor(sV.data() + size(sV), typename Kernel_traits::SmemLayoutP{});
+    Tensor sP_warp = local_tile(sP, Shape<Int<kWarpRows>, Int<kBlockN>>{},
+                                make_coord(mma_group_id, 0));
+
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_Q;
     auto gmem_thr_copy_Q = gmem_tiled_copy_Q.get_thread_slice(tidx);
     typename Kernel_traits::GmemTiledCopyQKVPaged gmem_tiled_copy_KV;
@@ -685,9 +720,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tOrVt  = thr_mma.partition_fragment_B(sVtNoSwizzle);             // (MMA, MMA_K,MMA_N)
     Tensor tOsVtWarp = thr_mma.partition_B(sVt);                            // (MMA, MMA_K,MMA_N)
 
+    Tensor tOsP  = thr_mma.partition_A(sP_warp);                            // (MMA,MMA_M,MMA_K)
+    Tensor tOrP  = thr_mma.partition_fragment_A(sP_warp);                   // (MMA,MMA_M,MMA_K)
+
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kWarpRows>, Int<kHeadDim>>{});  // MMA, MMA_M, MMA_K
     Tensor caccO = make_identity_tensor(Shape<Int<kWarpRows>, Int<kHeadDim>>{});                 // (BLK_M, BLK_K) -> (row, col)
     Tensor taccOcO = thr_mma.partition_C(caccO);                                                // (MMA, MMA_M, MMA_K) -> (row, col)
+
+    Tensor caccP = make_identity_tensor(Shape<Int<kWarpRows>, Int<kBlockN>>{});
+    Tensor taccPcO = thr_mma.partition_C(caccP);
 
     //
     // Copy Atom retiling
@@ -696,6 +737,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(mma_thread_id);
     Tensor tSsQ = smem_thr_copy_Q.retile_S(tOsQ);
+    Tensor tSsP = smem_thr_copy_Q.retile_S(tOsP);
 
     auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(mma_thread_id);
@@ -1004,10 +1046,20 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         #pragma unroll
         for (int i = 0; i < size(rP); ++i) { rP(i) = Element(acc_s(i)); }
 
-        auto tOrP = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
-            thr_mma, p_layout_warp, rP, smem_thr_copy_Q, lane_id
+        #pragma unroll
+        for (int i = 0; i < size(rP); ++i) {
+            const int row_local = get<0>(taccPcO(i));
+            const int col = get<1>(taccPcO(i));
+            const int row_global = mma_group_id * kWarpRows + row_local;
+            sP(row_global, col) = rP(i);
+        }
+        __syncthreads();
+
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
+            acc_o, tOrP, tOrVt, tSsP, tOsVt, tiled_mma, 
+            smem_tiled_copy_Q, smem_tiled_copy_V,
+            smem_thr_copy_Q, smem_thr_copy_V
         );
-        FLASH_NAMESPACE::gemm_rs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
 
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {

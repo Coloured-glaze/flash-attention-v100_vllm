@@ -126,7 +126,7 @@ struct Flash_fwd_kernel_traits  {
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
         Layout<Shape<_1, Int<kMmaLayoutWarps>, _1>>,
-        Tile<Int<kWarpRows>, _16, _4>
+        Tile<Int<kWarpRows>, Int<kBlockN / 4>, _4>
     >;
     static constexpr int kMmaThreads = decltype(size(TiledMma{}))::value;
     static_assert(kMmaThreads % 32 == 0, "SM70 TiledMma must use a whole number of warps");
@@ -146,10 +146,10 @@ struct Flash_fwd_kernel_traits  {
         SmemLayoutAtomQ{},
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
 
-    // Keep P in a simple row-major layout so the register-only C->A conversion can
-    // follow the logical coordinates directly without reasoning about a physical swizzle.
-    using SmemLayoutAtomP = Layout<Shape<_8, Int<kBlockN>>,
-                                   Stride<Int<kBlockN>, _1>>;
+    using SmemLayoutAtomP = decltype(
+        composition(Swizzle<kSwizzle, 3, 3>{},
+                    Layout<Shape<_8, Int<kBlockN>>,
+                           Stride<Int<kBlockN>, _1>>{}));
     using SmemLayoutP = decltype(tile_to_shape(
         SmemLayoutAtomP{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
@@ -172,7 +172,7 @@ struct Flash_fwd_kernel_traits  {
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * sizeof(Element);
     static constexpr int kSmemPSize = size(SmemLayoutP{}) * sizeof(Element);
-    static constexpr int kSmemSize = kSmemQSize + kSmemKVSize;
+    static constexpr int kSmemSize = kSmemQSize + kSmemKVSize + kSmemPSize;
     static_assert(kSmemSize <= 96 * 1024, "kSmemSize must fit within the 96KB shared memory limit on SM70");
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);

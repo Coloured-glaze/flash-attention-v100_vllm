@@ -212,18 +212,22 @@ if __name__ == "__main__":
     parser.add_argument("--use_tile", action="store_true", help="Use the tile flash attention")
     parser.add_argument("--use_sdpa", action="store_true", help="Use the SDPA results")
     parser.add_argument("--flops_num", type=int, default=200, help="Number of flops test")
+    parser.add_argument("--batch", type=int, default=1, help="Batch size")
+    parser.add_argument("--n_heads", type=int, default=40, help="Number of heads")
+    parser.add_argument("--seq_len", type=int, default=4096, help="Sequence length")
+    parser.add_argument("--head_dim", type=int, default=128, help="Head dimension")
     
     args = parser.parse_args()
     if args.profile:
         torch_profile(
             args,
-            BATCH = 1, N_HEADS = 40, SEQ_LEN = 4096, HEAD_DIM = 128,
+            BATCH = args.batch, N_HEADS = args.n_heads, SEQ_LEN = args.seq_len, HEAD_DIM = args.head_dim,
             block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
             )
 
     if args.flops:
         flops(
             args, num = args.flops_num,
-            BATCH = 1, N_HEADS = 40, SEQ_LEN = 4096, HEAD_DIM = 128,
+            BATCH = args.batch, N_HEADS = args.n_heads, SEQ_LEN = args.seq_len, HEAD_DIM = args.head_dim,
             block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
         )
