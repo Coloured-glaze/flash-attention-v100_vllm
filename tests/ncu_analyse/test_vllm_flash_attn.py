@@ -69,9 +69,9 @@ def torch_profile(
 
     # manual_result = profile_function("manual attention", manual_attn, query, key, value)
     
-    vllm_flash_result = profile_function("vllm flash attention", ref_program_fa, query, key, value)
-
-    tile_flash_result = None; sdp_result = None
+    tile_flash_result = None; sdpa_result = None; vllm_flash_result = None
+    if args.use_fa:
+        vllm_flash_result = profile_function("vllm flash attention", ref_program_fa, query, key, value)
     if args.use_tile:
         kernel = flashattn(
         query.shape,
@@ -89,18 +89,18 @@ def torch_profile(
         torch.backends.cuda.enable_mem_efficient_sdp(True)  # use xformers
         torch.backends.cuda.enable_flash_sdp(False)   # use flash attn backend
         # with sdpa_kernel(backends=[SDPBackend.EFFICIENT_ATTENTION]):
-        sdp_result = profile_function("sdpa", F.scaled_dot_product_attention, query, key, value, scale=sm_scale)
+        sdpa_result = profile_function("sdpa", F.scaled_dot_product_attention, query, key, value, scale=sm_scale)
 
-    if vllm_flash_result is not None and sdp_result is not None:
-        diff = torch.abs(vllm_flash_result - sdp_result)
+    if vllm_flash_result is not None and sdpa_result is not None:
+        diff = torch.abs(vllm_flash_result - sdpa_result)
         print(f"VLLM Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n", flush=True)
-        if not torch.allclose(vllm_flash_result, sdp_result, atol=5e-4, rtol=5e-4):
+        if not torch.allclose(vllm_flash_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("VLLM Flash Attention and SDPA results do not match.")
 
-    if tile_flash_result is not None and sdp_result is not None:
-        diff = torch.abs(tile_flash_result - sdp_result)
+    if tile_flash_result is not None and sdpa_result is not None:
+        diff = torch.abs(tile_flash_result - sdpa_result)
         print(f"Tile Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n", flush=True)
-        if not torch.allclose(tile_flash_result, sdp_result, atol=5e-4, rtol=5e-4):
+        if not torch.allclose(tile_flash_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("Tile Flash Attention and SDPA results do not match.")
 
 # ==========================================================================================
@@ -135,11 +135,12 @@ def flops(
     print("BATCH:", q_shape[0], "N_HEADS:", q_shape[1], "SEQ_LEN:", q_shape[2], "HEAD_DIM:", q_shape[3], "dtype:", dtype, "device:", device)
     print("KV_BATCH:", kv_shape[0], "KV_N_HEADS:", kv_shape[1], "KV_SEQ_LEN:", kv_shape[2], "KV_HEAD_DIM:", kv_shape[3])
 
-    fa_result = ref_program_fa(query, key, value)
 
-    ref_result = None; tile_result = None
+    sdpa_result = None; tile_result = None; fa_result = None
+    if args.use_fa:
+        fa_result = ref_program_fa(query, key, value)
     if args.use_sdpa:
-        ref_result = ref_program(query, key, value, mask, is_causal)
+        sdpa_result = ref_program(query, key, value, mask, is_causal)
     
     if args.use_tile:
         kernel = flashattn(
@@ -161,21 +162,22 @@ def flops(
             with open(os.path.join(os.path.dirname(__file__), "tile_flash_attention.cu"), "w") as f:
                 f.write(kernel.get_kernel_source())
     
-    if ref_result is not None:
-        diff = torch.abs(fa_result - ref_result)
+    if sdpa_result is not None and fa_result is not None:
+        diff = torch.abs(fa_result - sdpa_result)
         print(f"VLLM Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n")
-        if not torch.allclose(fa_result, ref_result, atol=5e-4, rtol=5e-4):
+        if not torch.allclose(fa_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("VLLM Flash Attention and Ref torch results do not match.")
     
-    if tile_result is not None and ref_result is not None:
-        diff = torch.abs(tile_result - ref_result)
+    if tile_result is not None and sdpa_result is not None:
+        diff = torch.abs(tile_result - sdpa_result)
         print(f"Tile Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n")
-        if not torch.allclose(tile_result, ref_result, atol=5e-4, rtol=5e-4):
+        if not torch.allclose(tile_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("Tile Flash Attention and Ref torch results do not match.")
 
-    latency = do_bench(lambda: ref_program_fa(query, key, value), warmup=num)
-    print("VLLM Flash Attention: {:.3f} ms".format(latency))
-    print("VLLM Flash Attention: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
+    if args.use_fa:
+        latency = do_bench(lambda: ref_program_fa(query, key, value), warmup=num)
+        print("VLLM Flash Attention: {:.3f} ms".format(latency))
+        print("VLLM Flash Attention: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
 
     if args.use_tile:
         if attn_mask:
@@ -185,15 +187,15 @@ def flops(
         print("Tile Flash Attention: {:.3f} ms".format(latency))
         print("Tile Flash Attention: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
     
-    if args.use_sdpa:
+    if args.use_sdpa and fa_result is not None:
         latency = do_bench(lambda: ref_program(query, key, value, mask, is_causal), warmup=num)
         print("Ref SDPA: {:.3f} ms".format(latency))
         print("Ref SDPA: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
-        torch.testing.assert_close(fa_result, ref_result, rtol=5e-4, atol=5e-4)
+        torch.testing.assert_close(fa_result, sdpa_result, rtol=5e-4, atol=5e-4)
         print(f"fa_result checks pass.")
     
-    if args.use_tile and ref_result is not None:
-        torch.testing.assert_close(tile_result, ref_result, rtol=5e-4, atol=5e-4)
+    if args.use_tile and sdpa_result is not None:
+        torch.testing.assert_close(tile_result, sdpa_result, rtol=5e-4, atol=5e-4)
         print(f"tile_result checks pass.")
 
 
@@ -209,8 +211,11 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true", help="Profile the kernel")
     parser.add_argument("--flops", action="store_true", help="Test the flops")
     parser.add_argument("--show_tile_source", action="store_true", help="Show the tile source")
+
+    parser.add_argument("--use_fa", action="store_true", help="Use the flash attention")
     parser.add_argument("--use_tile", action="store_true", help="Use the tile flash attention")
     parser.add_argument("--use_sdpa", action="store_true", help="Use the SDPA results")
+
     parser.add_argument("--flops_num", type=int, default=200, help="Number of flops test")
     parser.add_argument("--batch", type=int, default=1, help="Batch size")
     parser.add_argument("--n_heads", type=int, default=40, help="Number of heads")
