@@ -121,7 +121,7 @@ if (FA2_ENABLED)
                 endif()
             endforeach()
             list(LENGTH FA2_GEN_SRCS _N_SRCS)
-            message(STATUS "FA2: Building only hdim=${_FA2_HDIM_MAX} (${_N_SRCS} files)")
+            message(STATUS "***** FA2: Building only hdim=${_FA2_HDIM_MAX} (${_N_SRCS} files) *****")
         else ()
             # Multiple hdims: build sources up to max needed
             set(_FA2_KNOWN_HDIMS 32 64 96 128 192 256)

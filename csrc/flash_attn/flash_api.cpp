@@ -243,8 +243,7 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split
 #ifdef FA2_HDIM_EXACT
     constexpr static int kHeadDim = FA2_HDIM_EXACT;
     TORCH_CHECK(params.d == kHeadDim,
-        "This build only supports headdim=", FA2_HDIM_EXACT,
-        " but got headdim=", params.d);
+        "This build only supports headdim=", FA2_HDIM_EXACT, " but got headdim=", params.d);
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         if (params.num_splits <= 1 && !force_split_kernel) {
             run_mha_fwd_<kHeadDim, Is_causal>(params, stream);
@@ -1527,9 +1526,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "FlashAttention";
     m.def("fwd", &FLASH_NAMESPACE::mha_fwd, "Forward pass");
     m.def("varlen_fwd", &FLASH_NAMESPACE::mha_varlen_fwd, "Forward pass (variable length)");
+    m.def("fwd_kvcache", &FLASH_NAMESPACE::mha_fwd_kvcache, "Forward pass, with KV-cache");
     m.def("bwd", &FLASH_NAMESPACE::mha_bwd, "Backward pass");
     m.def("varlen_bwd", &FLASH_NAMESPACE::mha_varlen_bwd, "Backward pass (variable length)");
-    m.def("fwd_kvcache", &FLASH_NAMESPACE::mha_fwd_kvcache, "Forward pass, with KV-cache");
 }
 
 #endif

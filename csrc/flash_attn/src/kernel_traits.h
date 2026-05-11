@@ -95,7 +95,7 @@ struct Copy_Traits<SM70_STG_GLOBAL_CG_128b> {
 
 using namespace cute;
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kCtaWarps_, int kMmaLayoutWarps_=kCtaWarps_>
+template<int kHeadDim_, int kBlockM_, int kBlockN_, int kCtaWarps_, int kMmaLayoutWarps_=4>
 struct Flash_fwd_kernel_traits  {
     using Element = cutlass::half_t;
     using ElementAccum = float;

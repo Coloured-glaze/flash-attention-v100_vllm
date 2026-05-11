@@ -20,11 +20,9 @@ Flash Attention 移植到 V100 (SM70) GPU，移除了 SM80 支持。
 ## 其他参考文档
 
 - **.claude/skills/cuda-kernel-optimizer**: CUDA 内核优化技能，包含优化cuda内核的 skills 。
-- **.claude/skills/sm70-fa-optimizer**: SM70 Flash Attention 优化技能，包含优化fa内核的 skills 。
 - **cuda_kernel_sample/doc**: 文档目录，包含 v100 参数，其他 v100 flash attention 实现 论文。
 - **cuda_kernel_sample/flash-attention-turing_2**: SM75 Turing 版本的 Flash Attention 。
-- **cuda_kernel_sample/cuda_LeetCUDA/kernels**: 包含大量 cuda 内核示例, 包括多种FA实现。
-- **cuda_kernel_sample/cuda_LeetCUDA/ffpa-attn**: 支持 512 DIM FA 实现。
+- **cuda_kernel_sample/cuda_LeetCUDA/kernels**: 包含 cuda 内核示例, 包括多种FA实现。
 - **cuda_kernel_sample/cuda_learn**: 包含 cuda 内核示例。
 - **cuda_kernel_sample/cuda_kernels-community**: 包含hf社区收集的 cuda 内核，包含标准的 FA2 FA3 FA4 实现。。
 

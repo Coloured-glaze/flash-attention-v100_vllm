@@ -1,27 +1,20 @@
 
+cd ./tests/ncu_analyse/
+
 time=$(date '+%y%m%d_%H%M')
 git_commit=$(git rev-parse --short HEAD)
-file_name="prof"
+file_name="prof_sdpa"
 
-echo "git commit: ${git_commit}" > ${file_name}_${time}_${git_commit}.txt
+python test_vllm_flash_attn.py --flops --profile --use_sdpa > ${file_name}_${time}_${git_commit}.txt 
 
-echo "start benchmark at ${time}" \
-&& \
-compute-sanitizer --print-limit 1 python test_vllm_flash_attn.py --flops --flops_num 5 --use_fa \
-&& \
-python test_vllm_flash_attn.py --flops --profile --use_fa --use_sdpa >> ${file_name}_${time}_${git_commit}.txt \
-&& \
-echo "benchmark done at ${time}"
-
-echo "start profile analysis"
-
-KERNEL_REGEX='.*fwd.*'
+# KERNEL_REGEX='.*fwd.*'
+KERNEL_REGEX='.*PyTorchMemEffAttention.*'
 
 ncu -f --target-processes all --set full \
     --kernel-name-base demangled \
     --kernel-name ::regex:"${KERNEL_REGEX}" \
     -o "profile_out" \
-    python test_vllm_flash_attn.py --flops --use_fa \
+    python test_vllm_flash_attn.py --flops --use_sdpa \
 && \
 ncu --import profile_out.ncu-rep --csv | head -n 200 > ${file_name}_${time}.csv \
 && \
@@ -31,5 +24,3 @@ rm ${file_name}_${time}.csv \
 && \
 echo "profile analysis done. "
 echo "result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
-
-

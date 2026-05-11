@@ -51,3 +51,4 @@ tests/ncu_analyse/prof_*.txt
 tests/ncu_analyse/tl_templates/*
 tests/ncu_analyse/tile_flash_attention.cu
 csrc/tilelang/*
+sm70_fa_config*

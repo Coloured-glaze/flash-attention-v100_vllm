@@ -22,4 +22,5 @@ python compact_ncu.py ${file_name}_${time}.csv >> ${file_name}_${time}_${git_com
 && \
 rm ${file_name}_${time}.csv \
 && \
-echo "profile analysis done.\n result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
+echo "profile analysis done. "
+echo "result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
