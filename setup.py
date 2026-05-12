@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Enivronment variables
 Envs = namedtuple("Envs", [
-    "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM"])
+    "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM", "SHOW_PTX", ])
 envs = Envs(
     VERBOSE=bool(int(os.getenv("VERBOSE", "0"))),
     MAX_JOBS=os.getenv("MAX_JOBS"),
@@ -34,6 +34,7 @@ envs = Envs(
     VLLM_TARGET_DEVICE=os.getenv("VLLM_TARGET_DEVICE", "cuda"),
     CMAKE_BUILD_TYPE=os.getenv("CMAKE_BUILD_TYPE"),
     FA_HDIM=os.getenv("FA_HDIM", ""), # 指定编译FA的头维度，快速测试内核，例如 export FA_HDIM=128 , export FA_HDIM=32,64 
+    SHOW_PTX=os.getenv("SHOW_PTX", None),
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -185,14 +186,26 @@ class cmake_build_ext(build_ext):
 
         if nvcc_threads:
             cmake_args += ['-DNVCC_THREADS={}'.format(nvcc_threads)]
-
+        # region CUDA_FLAGS 
         if is_ninja_available():
             build_tool = ['-G', 'Ninja']
             DCMAKE_CUDA_FLAGS = [
+                # "-O3",
+                # "-std=c++17",
+                # "-gencode", "arch=compute_70,code=sm_70",
+                "-U__CUDA_NO_HALF_OPERATORS__",
+                "-U__CUDA_NO_HALF_CONVERSIONS__",
+                "-U__CUDA_NO_HALF2_OPERATORS__",
+                "--expt-relaxed-constexpr",
+                "--expt-extended-lambda",
+                "--use_fast_math",
+                "--ptxas-options=-O3",
                 "-Wno-deprecated-gpu-targets",
                 "-allow-unsupported-compiler",
                 "-lineinfo",
             ]
+            if envs.SHOW_PTX is not None:
+                DCMAKE_CUDA_FLAGS += [ "--ptxas-options=-v", ]
             cmake_args += [
                 '-DCMAKE_JOB_POOLS:STRING=compile={}'.format(num_jobs),
                 '-DCMAKE_CUDA_FLAGS={}'.format(" ".join(DCMAKE_CUDA_FLAGS)),

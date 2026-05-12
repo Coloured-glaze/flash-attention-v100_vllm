@@ -182,8 +182,9 @@ def flops(
             tile_result = kernel(query, key, value)
 
         if args.show_tile_source:
-            with open(os.path.join(os.path.dirname(__file__), "tile_flash_attention.cu"), "w") as f:
+            with open(os.path.join(os.path.dirname(__file__), f"tile_flash_attn_dim{HEAD_DIM}.cu"), "w") as f:
                 f.write(kernel.get_kernel_source())
+                print(f"tile_flash_attn_dim{HEAD_DIM}.cu saved.")
     
     if sdpa_result is not None and fa_result is not None:
         diff = torch.abs(fa_result - sdpa_result)
@@ -232,7 +233,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test VLLM Flash Attention")
     parser.add_argument("--profile", action="store_true", help="Profile the kernel")
     parser.add_argument("--flops", action="store_true", help="Test the flops")
-    parser.add_argument("--flops_num", type=int, default=200, help="Number of flops test")
+    parser.add_argument("--flops_num", type=int, default=500, help="Number of flops test")
     parser.add_argument("--show_tile_source", action="store_true", help="Show the tilelang cuda source code")
 
     parser.add_argument("--use_fa", action="store_true", help="Use the flash attention")
