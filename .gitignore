@@ -50,5 +50,8 @@ tests/ncu_analyse/prof_*.csv
 tests/ncu_analyse/prof_*.txt
 tests/ncu_analyse/tl_templates/*
 tests/ncu_analyse/tile_flash*.cu
-csrc/tilelang/*
+tests/ncu_analyse/tile_fa_dim*
+dim*_*.txt
+autotuner*
+
 sm70_fa_config*

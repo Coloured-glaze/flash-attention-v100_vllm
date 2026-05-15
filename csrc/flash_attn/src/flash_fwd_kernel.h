@@ -72,10 +72,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int kWarpRows = Kernel_traits::kWarpRows;
     constexpr int kBlockRowStride = kBlockM / kWarpRows;
 
-    const int mma_group_id = tidx / Kernel_traits::kMmaThreads;
-    const int mma_thread_id = tidx % Kernel_traits::kMmaThreads;
-    //const int warp_id_in_group = mma_thread_id / 32;
-    //const int lane_id = tidx % 32;
+    const int warp_id = tidx / 32;
+    // const int lane_id = tidx % 32;
+    const int mma_group_id = warp_id;
+    const int mma_thread_id = tidx;
 
     auto seed_offset = at::cuda::philox::unpack(params.philox_args);
     FLASH_NAMESPACE::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
@@ -90,7 +90,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
     if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
-    const int rows_valid = binfo.actual_seqlen_q - m_block * kBlockM;
+    // const int rows_valid = binfo.actual_seqlen_q - m_block * kBlockM;
 
     const int n_block_min = !Is_local ? 0 : std::max(0, (m_block * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q - params.window_size_left) / kBlockN);
     int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
@@ -362,8 +362,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Tensor rP = make_tensor<Element>(acc_s.layout());
         cute::copy(acc_s, rP);
         int block_row_idx = m_block * kBlockRowStride + mma_group_id;
-        int block_col_idx = n_block * (kBlockN / 32);
         if constexpr (Return_softmax) {
+            int block_col_idx = n_block * (kBlockN / 32);
             Tensor rP_drop = make_fragment_like(rP);
             cute::copy(rP, rP_drop);
             dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
@@ -373,6 +373,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tSgS.data() = tSgS.data() + (-kBlockN);
         }
         if constexpr (Is_dropout) {
+            int block_col_idx = n_block * (kBlockN / 32);
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kBlockRowStride);
         }
 
@@ -439,8 +440,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Tensor rP = make_tensor<Element>(acc_s.layout());
         cute::copy(acc_s, rP);
         int block_row_idx = m_block * kBlockRowStride + mma_group_id;
-        int block_col_idx = n_block * (kBlockN / 32);
         if constexpr (Return_softmax) {
+            int block_col_idx = n_block * (kBlockN / 32);
             Tensor rP_drop = make_fragment_like(rP);
             cute::copy(rP, rP_drop);
             dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
@@ -450,6 +451,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tSgS.data() = tSgS.data() + (-kBlockN);
         }
         if constexpr (Is_dropout) {
+            int block_col_idx = n_block * (kBlockN / 32);
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kBlockRowStride);
         }
 
@@ -563,10 +565,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kWarpRows = Kernel_traits::kWarpRows;
 
-    const int mma_group_id = tidx / Kernel_traits::kMmaThreads;
-    const int mma_thread_id = tidx % Kernel_traits::kMmaThreads;
-    //const int warp_id_in_group = mma_thread_id / 32;
+    const int warp_id = tidx / 32;
     const int lane_id = tidx % 32;
+    const int mma_group_id = warp_id;
+    const int mma_thread_id = tidx;
 
     using GmemTiledCopyOStore = std::conditional_t<
         !Split,

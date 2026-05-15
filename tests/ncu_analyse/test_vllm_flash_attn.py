@@ -49,20 +49,20 @@ def manual_attn(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
 
 # region torch profile test
 def torch_profile(
-    args,
-    BATCH = 1, N_HEADS = 16, SEQ_LEN = 4096, HEAD_DIM = 128,
+    args, q_shape, kv_shape,
     block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False):
 
     causal, dtype, device = False, torch.float16, "cuda"
     torch.manual_seed(42)
     print(f"torch: {torch.__version__}, cudnn: {torch.backends.cudnn.version()}, name: {torch.cuda.get_device_properties(0).name}")
 
-    query = torch.randn(BATCH, N_HEADS, SEQ_LEN, HEAD_DIM, dtype=dtype, device=device)
-    key = torch.randn(BATCH, N_HEADS, SEQ_LEN, HEAD_DIM, dtype=dtype, device=device)
-    value = torch.randn(BATCH, N_HEADS, SEQ_LEN, HEAD_DIM, dtype=dtype, device=device)
-    sm_scale = (1.0 / (HEAD_DIM ** 0.5))
+    query = torch.randn(q_shape, dtype=dtype, device=device)
+    key = torch.randn(kv_shape, dtype=dtype, device=device)
+    value = torch.randn(kv_shape, dtype=dtype, device=device)
+    sm_scale = (1.0 / (q_shape[3] ** 0.5))
 
-    print("BATCH:", BATCH, "N_HEADS:", N_HEADS, "SEQ_LEN:", SEQ_LEN, "HEAD_DIM:", HEAD_DIM, "dtype:", dtype, "device:", device)
+    print("Q BATCH:", query.shape[0], "Q N_HEADS:", query.shape[1], "Q SEQ_LEN:", query.shape[2], "Q HEAD_DIM:", query.shape[3], "dtype:", dtype, "device:", device)
+    print("kV BATCH:", key.shape[0], "kV N_HEADS:", key.shape[1], "kV SEQ_LEN:", key.shape[2], "kV HEAD_DIM:", key.shape[3])
 
     def profile_function(name, func, *args, **kwargs):
         for i in range(5): 
@@ -91,9 +91,9 @@ def torch_profile(
     # manual_result = profile_function("manual attention", manual_attn, query, key, value)
     
     tile_flash_result = None; sdpa_result = None; vllm_flash_result = None
-    if args.use_fa:
+    if args.fa:
         vllm_flash_result = profile_function("vllm flash attention", ref_program_fa, query, key, value)
-    if args.use_tile:
+    if args.tile:
         kernel = flashattn(
         query.shape,
         key.shape,
@@ -105,7 +105,7 @@ def torch_profile(
         threads=threads)
         tile_flash_result = profile_function("tile flash attention", kernel, query, key, value)
     
-    if args.use_sdpa:
+    if args.sdpa:
         torch.backends.cuda.enable_math_sdp(False)  # use Torch
         torch.backends.cuda.enable_mem_efficient_sdp(True)  # use xformers
         torch.backends.cuda.enable_flash_sdp(False)   # use flash attn backend
@@ -128,16 +128,10 @@ def torch_profile(
 
 # region flops test
 def flops(
-    args,
-    is_causal: bool = False, attn_mask: bool = False, num: int = 100, 
-    BATCH = 1, N_HEADS = 16, SEQ_LEN = 4096, HEAD_DIM = 128,
-    block_M=128, block_N=64, num_stages=2, threads=128
+    args, num, q_shape, kv_shape,
+    block_M=128, block_N=64, num_stages=1, threads=256, 
+    is_causal: bool = False, attn_mask: bool = False, 
 ):
-    q_shape = (BATCH, N_HEADS, SEQ_LEN, HEAD_DIM) 
-    kv_shape = (BATCH, N_HEADS, SEQ_LEN, HEAD_DIM) 
-
-    # q_shape = (2, 10, 4096, 64) 
-    # kv_shape = (2, 10, 77, 64) 
 
     flops_per_matmul = 2.0 * q_shape[0] * q_shape[1] * q_shape[2] * kv_shape[2] * q_shape[3]
     total_flops = 2 * flops_per_matmul
@@ -156,16 +150,16 @@ def flops(
     else:
         mask = None
     
-    print("BATCH:", q_shape[0], "N_HEADS:", q_shape[1], "SEQ_LEN:", q_shape[2], "HEAD_DIM:", q_shape[3], "dtype:", dtype, "device:", device)
+    print("Q BATCH:", q_shape[0], "Q N_HEADS:", q_shape[1], "Q SEQ_LEN:", q_shape[2], "Q HEAD_DIM:", q_shape[3], "dtype:", dtype, "device:", device)
     print("KV_BATCH:", kv_shape[0], "KV_N_HEADS:", kv_shape[1], "KV_SEQ_LEN:", kv_shape[2], "KV_HEAD_DIM:", kv_shape[3])
 
     sdpa_result = None; tile_result = None; fa_result = None
-    if args.use_fa:
+    if args.fa:
         fa_result = ref_program_fa(query, key, value)
-    if args.use_sdpa:
+    if args.sdpa:
         sdpa_result = ref_program(query, key, value, mask, is_causal)
     
-    if args.use_tile:
+    if args.tile:
         kernel = flashattn(
             q_shape,
             kv_shape,
@@ -182,13 +176,13 @@ def flops(
             tile_result = kernel(query, key, value)
 
         if args.show_tile_source:
-            with open(os.path.join(os.path.dirname(__file__), f"tile_flash_attn_dim{HEAD_DIM}.cu"), "w") as f:
+            with open(os.path.join(os.path.dirname(__file__), f"tile_flash_attn_dim{q_shape[3]}.cu"), "w") as f:
                 f.write(kernel.get_kernel_source())
-                print(f"tile_flash_attn_dim{HEAD_DIM}.cu saved.")
+                print(f"tile_flash_attn_dim{q_shape[3]}.cu saved.")
     
     if sdpa_result is not None and fa_result is not None:
         diff = torch.abs(fa_result - sdpa_result)
-        print(f"VLLM Flash Attention diff max: {diff.max()}, mean: {diff.mean()}\n")
+        print(f"VLLM Flash Attention Ref torch diff max: {diff.max()}, mean: {diff.mean()}\n")
         if not torch.allclose(fa_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("VLLM Flash Attention and Ref torch results do not match.")
     
@@ -198,37 +192,39 @@ def flops(
         if not torch.allclose(tile_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("Tile Flash Attention and Ref torch results do not match.")
 
-    if args.use_fa:
-        latency = do_bench(lambda: ref_program_fa(query, key, value), warmup=num)
-        print("VLLM Flash Attention: {:.3f} ms".format(latency))
-        print("VLLM Flash Attention: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
+    if args.fa:
+        fa_latency = do_bench(fn=lambda: ref_program_fa(query, key, value), rep=num, warmup=int(num/2))
+        print(f"VLLM Flash Attention: {fa_latency:.3f} ms")
+        print(f"VLLM Flash Attention: {total_flops / fa_latency * 1e-9:.3f} TFlops")
 
-    if args.use_tile:
+    if args.tile:
         if attn_mask:
-            latency = do_bench(lambda: kernel(query, key, value, mask), warmup=num)
+            tile_latency = do_bench(fn=lambda: kernel(query, key, value, mask), rep=num, warmup=int(num/2))
         else:   
-            latency = do_bench(lambda: kernel(query, key, value), warmup=num)
-        print("Tile Flash Attention: {:.3f} ms".format(latency))
-        print("Tile Flash Attention: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
+            tile_latency = do_bench(fn=lambda: kernel(query, key, value), rep=num, warmup=int(num/2))
+        print(f"Tile Flash Attention: {tile_latency:.3f} ms")
+        print(f"Tile Flash Attention: {total_flops / tile_latency * 1e-9:.3f} TFlops")
     
-    if args.use_sdpa :
-        latency = do_bench(lambda: ref_program(query, key, value, mask, is_causal), warmup=num)
-        print("Ref SDPA: {:.3f} ms".format(latency))
-        print("Ref SDPA: {:.3f} TFlops \n".format(total_flops / latency * 1e-9))
+    if args.sdpa :
+        sdpa_latency = do_bench(fn=lambda: ref_program(query, key, value, mask, is_causal), rep=num, warmup=int(num/2))
+        print(f"Ref SDPA: {sdpa_latency:.3f} ms")
+        print(f"Ref SDPA: {total_flops / sdpa_latency * 1e-9:.3f} TFlops")
 
-    if args.use_sdpa and fa_result is not None:
+    if (fa_result is not None) and (sdpa_result is not None) :
+        vllm_fa_speed_up = (1 - (float(fa_latency) / float(sdpa_latency)) ) * 100
         torch.testing.assert_close(fa_result, sdpa_result, rtol=5e-4, atol=5e-4)
-        print(f"fa_result checks pass.")
+        print(f"fa result checks pass. fa speed up: {vllm_fa_speed_up:.2f}%\n")
     
-    if args.use_tile and sdpa_result is not None:
+    if (tile_result is not None) and (sdpa_result is not None) :
+        tile_speed_up = (1 - (float(tile_latency) / float(sdpa_latency)) ) * 100
         torch.testing.assert_close(tile_result, sdpa_result, rtol=5e-4, atol=5e-4)
-        print(f"tile_result checks pass.")
+        print(f"tile result checks pass. tile speed up: {tile_speed_up:.2f}%\n")
 
 
 # region run test
 if __name__ == "__main__":
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1" 
-    os.environ["TORCH_USE_CUDA_DSA"] = "1"
+    # os.environ["CUDA_LAUNCH_BLOCKING"] = "1" 
+    # os.environ["TORCH_USE_CUDA_DSA"] = "1"
     
     parser = argparse.ArgumentParser(description="Test VLLM Flash Attention")
     parser.add_argument("--profile", action="store_true", help="Profile the kernel")
@@ -236,9 +232,9 @@ if __name__ == "__main__":
     parser.add_argument("--flops_num", type=int, default=500, help="Number of flops test")
     parser.add_argument("--show_tile_source", action="store_true", help="Show the tilelang cuda source code")
 
-    parser.add_argument("--use_fa", action="store_true", help="Use the flash attention")
-    parser.add_argument("--use_sdpa", action="store_true", help="Use the SDPA results")
-    parser.add_argument("--use_tile", action="store_true", help="Use the tile flash attention")
+    parser.add_argument("--fa", action="store_true", help="Use the flash attention")
+    parser.add_argument("--sdpa", action="store_true", help="Use the SDPA results")
+    parser.add_argument("--tile", action="store_true", help="Use the tile flash attention")
 
     parser.add_argument("--batch", type=int, default=1, help="Batch size")
     parser.add_argument("--n_heads", type=int, default=40, help="Number of heads")
@@ -246,19 +242,85 @@ if __name__ == "__main__":
     parser.add_argument("--head_dim", type=int, default=128, help="Head dimension")
     
     args = parser.parse_args()
-    if args.profile:
-        torch_profile(
-            args,
-            BATCH = args.batch, N_HEADS = args.n_heads, SEQ_LEN = args.seq_len, HEAD_DIM = args.head_dim,
-            block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
+
+    # q_shape = (args.batch, args.n_heads, args.seq_len, args.head_dim) 
+    # kv_shape = (args.batch, args.n_heads, args.seq_len, args.head_dim) 
+
+    q_shape_list = []
+    kv_shape_list = []
+
+    q_shape = (2, 20, 1024, args.head_dim) 
+    kv_shape = (2, 20, 77, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    q_shape = (2, 10, 4096, args.head_dim) 
+    kv_shape = (2, 10, 77, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    q_shape = (2, 10, 6144, args.head_dim)
+    kv_shape = (2, 10, 77, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    q_shape = (8, 10, 512, args.head_dim) 
+    kv_shape = (8, 10, 512, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    # q_shape = (8, 10, 1536, args.head_dim) 
+    # kv_shape = (8, 10, 1536, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    # q_shape = (8, 10, 2048, args.head_dim) 
+    # kv_shape = (8, 10, 2048, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    q_shape = (2, 40, 4096, args.head_dim) 
+    kv_shape = (2, 40, 4096, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    # q_shape = (2, 40, 8192, args.head_dim) 
+    # kv_shape = (2, 40, 8192, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
+        if args.profile:
+            torch_profile(
+                args,
+                q_shape, kv_shape,
+                block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
+                )
+
+        if args.flops:
+            flops(
+                args, is_causal=False, attn_mask=False, num = args.flops_num,
+                q_shape=q_shape, kv_shape=kv_shape,
+                block_M=128, block_N=64, num_stages=1, threads=256, 
             )
 
-    if args.flops:
-        flops(
-            args, num = args.flops_num,
-            BATCH = args.batch, N_HEADS = args.n_heads, SEQ_LEN = args.seq_len, HEAD_DIM = args.head_dim,
-            block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
-        )
 
-# python tests/ncu_analyse/test_vllm_flash_attn.py --flops --use_fa --use_sdpa --head_dim 128 --seq_len 2048
-# python ./tests/ncu_analyse/test_vllm_flash_attn.py --flops --use_fa --use_sdpa --profile --n_heads 16 --head_dim 64 --seq_len 1024
+Pytorch_AttentionKernel_Generator = """
+    def cpp_class(self) -> str:
+        template_args = ", ".join(
+            [
+                DTYPES[self.dtype],
+                f"cutlass::arch::Sm{self.sm_range[0]}",
+                "true" if self.aligned else "false",
+                str(self.q),
+                str(self.k),
+                str(self.max_k),
+                "true" if self.supports_dropout else "false",
+                "true" if self.supports_bias else "false",
+            ]
+        )
+        return f"AttentionKernel<{template_args}>"
+"""
+
+# python tests/ncu_analyse/test_vllm_flash_attn.py --flops --fa --sdpa --head_dim 128 
+# python tests/ncu_analyse/test_vllm_flash_attn.py --flops --profile --fa --sdpa --head_dim 64

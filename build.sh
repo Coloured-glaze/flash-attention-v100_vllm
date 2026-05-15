@@ -16,6 +16,7 @@ echo nproc=$(nproc)
 
 free -m
 
+# export FA_HDIM=32,64,96,128; export SHOW_PTX=1
 export MAX_JOBS=12
 export NVCC_THREADS=2
 # export CMAKE_BUILD_TYPE=Release
@@ -46,7 +47,7 @@ echo "start build at ${time}"
 
 python setup.py bdist_wheel 2>&1 | \
   sed -E 's/.*([1-9][0-9]* bytes spill stores).*/\x1b[31m&\x1b[0m/g' && \
-echo "start build at ${time} -- end build at $(date '+%F_%H-%M-%S')" && \
+echo "start build at ${time} -- end build at $(date '+%F_%H:%M:%S')" && \
 ls -lh ${target_whl} && \
   pip uninstall vllm_flash_attn -y && pip install ${target_whl} 
 

@@ -1,10 +1,32 @@
 import torch
 import tilelang
 import tilelang.language as T
+from tilelang.autotuner import autotune
 from tilelang.profiler import do_bench
 
+import os, json
+import argparse
+import itertools
+from functools import partial
+
+
+def benchmark(fn, rep=10, warmup=10, *args, **kwargs):
+    return (do_bench(fn=lambda: fn(*args, **kwargs), rep=rep, warmup=warmup, return_mode="mean") * 1e3) # return in us
+
+def get_configs():
+    iter_params = dict(
+        block_M=[16, 32, 64, 96, 128, 256], 
+        block_N=[16, 32, 64, 96,128],
+        num_stages=[1], 
+        threads=[64, 128, 256],
+    )
+    return [dict(zip(iter_params, values)) for values in itertools.product(*iter_params.values())]
+
+@autotune(configs=get_configs(), warmup=10, rep=10)
 @tilelang.jit(
-    out_idx=[-1], pass_configs={
+    out_idx=[-1], 
+    target="cuda --arch=sm_70",
+    pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     })
 def flashattn(
@@ -275,3 +297,186 @@ def flashattn(
 
     return main
 
+
+def ref_program(Q, K, V, mask, is_causal):
+    return torch.nn.functional.scaled_dot_product_attention(Q, K, V, attn_mask=mask, dropout_p=0.0, is_causal=is_causal)
+
+
+def main_bench(
+    args,
+    is_causal: bool = False,
+    is_mask: bool = False,
+    num: int = 200,
+    tune: bool = False,
+    sdpa: bool = False,
+    q_shape = (),
+    kv_shape = (),
+    block_M=128, block_N=64, num_stages=1, threads=256, 
+):
+
+    flops_per_matmul = 2.0 * q_shape[0] * q_shape[1] * q_shape[2] * kv_shape[2] * q_shape[3]
+    total_flops = 2 * flops_per_matmul
+    if is_causal:
+        total_flops *= 0.5
+
+    target_json = f"tile_fa_dim{q_shape[3]}_{q_shape}_{kv_shape}.json"
+    if os.path.exists(os.path.join(os.path.dirname(__file__), target_json)):
+        with open(os.path.join(os.path.dirname(__file__), target_json), "r") as f:
+            cfg = json.load(f)
+        print(f"{target_json} loaded.")
+        block_M = cfg["block_M"]
+        block_N = cfg["block_N"]
+        num_stages = cfg["num_stages"]
+        threads = cfg["threads"]
+        args.tune = False; tune = False
+
+    kernel = flashattn(
+        q_shape,
+        kv_shape,
+        is_causal,
+        is_mask, 
+        block_M,
+        block_N,
+        num_stages,
+        threads)
+
+    dtype, device = torch.float16, "cuda"
+    torch.manual_seed(42)
+    query = torch.randn(q_shape, dtype=dtype, device=device)
+    key = torch.randn(kv_shape, dtype=dtype, device=device)
+    value = torch.randn(kv_shape, dtype=dtype, device=device)
+    
+    if is_mask:
+        mask = torch.zeros(q_shape[0], q_shape[1], q_shape[2], kv_shape[2], dtype=dtype, device=device)
+        # 屏蔽后半部分 keys
+        mask[:, :, :, kv_shape[2]//2:] = -torch.inf
+    else:
+        mask = None
+    
+    print(f"BATCH: {q_shape[0]}, N_HEADS: {q_shape[1]}, SEQ_LEN: {q_shape[2]}, HEAD_DIM: {q_shape[3]}, dtype: {dtype}, device: {device}")
+    print(f"KV_BATCH: {kv_shape[0]}, KV_N_HEADS: {kv_shape[1]}, KV_SEQ_LEN: {kv_shape[2]}, KV_HEAD_DIM: {kv_shape[3]}"
+        f" | block_M: {block_M}, block_N: {block_N}, num_stages: {num_stages}, threads: {threads}"    
+    )
+
+    if tune:
+        kernel = flashattn(
+        q_shape, kv_shape, is_causal, is_mask)
+
+        profiler = kernel.get_profiler()
+        ref_program_processed = partial(ref_program, mask=mask, is_causal=is_causal)
+        ref_latency = profiler.do_bench(ref_program_processed, warmup=500)
+
+        best_latency = kernel.latency
+        best_config = kernel.config
+        # ref_latency = kernel.ref_latency
+        print(f"Best config: {best_config}")
+        print(f"Best latency: {best_latency:.3f} ms | Best TFlops: {total_flops / best_latency * 1e-9:.3f}")
+        if ref_latency is not None:
+            print(f"Ref latency: {ref_latency:.3f} ms | Ref TFlops: {total_flops / ref_latency * 1e-9:.3f}")
+
+        best_config["q_shape"] = q_shape; best_config["kv_shape"] = kv_shape; 
+        best_config["best_latency"] = best_latency; best_config["ref_latency"] = ref_latency
+
+        cfg_json = json.dumps(best_config, indent=4)
+        with open(os.path.join(os.path.dirname(__file__), target_json), "w") as f:
+            f.write(cfg_json)
+        print(f"{target_json} saved.")
+        return
+
+    if args.show_tile_source:
+        with open(os.path.join(os.path.dirname(__file__), target_json.replace(".json", ".cu")), "w") as f:
+            f.write(kernel.get_kernel_source())
+            print(f"{target_json} saved.")
+
+    if sdpa:
+        ref_result = ref_program(query, key, value, mask, is_causal)
+    
+    if is_mask:
+        tile_result = kernel(query, key, value, mask)
+    else:   
+        tile_result = kernel(query, key, value)
+    
+    if sdpa:
+        diff = torch.abs(tile_result - ref_result)
+        print(f"diff tile_result vs ref_result max: {diff.max()}, mean: {diff.mean()}")
+
+    if sdpa:
+        latency = benchmark(fn=lambda: ref_program(query, key, value, mask, is_causal), rep=num, warmup=int(num/2)) / 1e3
+        print(f"Ref torch: {latency:.3f} ms | {total_flops / latency * 1e-9:.3f} TFlops")
+
+    if is_mask:
+        latency = benchmark(fn=lambda: kernel(query, key, value, mask), rep=num, warmup=int(num/2)) / 1e3
+    else:   
+        latency = benchmark(fn=lambda: kernel(query, key, value), rep=num, warmup=int(num/2)) / 1e3
+
+    print(f"Tile-lang: {latency:.3f} ms | {total_flops / latency * 1e-9:.3f} TFlops")
+
+    if sdpa:
+        torch.testing.assert_close(tile_result, ref_result, rtol=5e-4, atol=5e-4)
+        print("All checks pass.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--is_causal', action='store_true', help='causal')
+    parser.add_argument('--is_mask', action='store_true', help='mask')
+    
+    parser.add_argument('--num', type=int, default=500, help='number of runs')
+    parser.add_argument("--sdpa", action="store_true", help="use sdpa attn")
+    parser.add_argument("--tune", action="store_true", help="tune configs")
+    parser.add_argument("--show_tile_source", action="store_true", help="show_tile_source")
+
+    parser.add_argument("--q_shape", type=int, nargs="+", default=(), help="q_shape e.g: 2 10 1024 64")
+    parser.add_argument("--kv_shape",type=int, nargs="+", default=(), help="kv_shape e.g: 2 10 1024 64")
+
+    parser.add_argument("--block_M", type=int, default=128, help="block_M")
+    parser.add_argument("--block_N", type=int, default=64, help="block_N")
+    parser.add_argument("--num_stages", type=int, default=1, help="num_stages")
+    parser.add_argument("--threads", type=int, default=256, help="threads")
+
+    args = parser.parse_args()
+    q_shape_list = []
+    kv_shape_list = []
+
+    if args.q_shape: q_shape = tuple(args.q_shape)
+    if args.kv_shape: kv_shape = tuple(args.kv_shape)
+
+    if len(args.q_shape) == 0 or len(args.kv_shape) == 0:
+        print("q_shape or kv_shape must be provided")
+        # q_shape = (2, 10, 1024, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 1024, 64); kv_shape_list.append(kv_shape)
+
+        # q_shape = (2, 10, 1536, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 1536, 64); kv_shape_list.append(kv_shape)
+
+        # q_shape = (2, 10, 4096, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 4096, 64); kv_shape_list.append(kv_shape)
+
+        q_shape = (2, 10, 1024, 64); q_shape_list.append(q_shape)
+        kv_shape = (2, 10, 77, 64); kv_shape_list.append(kv_shape)
+
+        # q_shape = (2, 10, 4096, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 77, 64); kv_shape_list.append(kv_shape)
+
+        # q_shape = (2, 10, 6144, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 77, 64); kv_shape_list.append(kv_shape)
+
+        # q_shape = (2, 10, 6144, 64); q_shape_list.append(q_shape)
+        # kv_shape = (2, 10, 256, 64); kv_shape_list.append(kv_shape)
+
+        for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
+            if q_shape[2] <= 6144 and kv_shape[2] == 77 :
+                args.block_M = 64; args.block_N = 16; args.threads = 64; args.num_stages = 1
+
+            elif q_shape[2] <= 6144 and kv_shape[2] <= 512 :
+                args.block_M = 64; args.block_N = 32; args.threads = 64; args.num_stages = 1
+
+            elif q_shape[2] == kv_shape[2] < 2048 :
+                args.block_M = 64; args.block_N = 64; args.threads = 128; args.num_stages = 1
+
+            elif q_shape[2] == kv_shape[2] >= 2048 :
+                args.block_M = 128; args.block_N = 64; args.threads = 256; args.num_stages = 1
+
+    main_bench(args, args.is_causal, args.is_mask, args.num, args.tune, args.sdpa, 
+        q_shape, kv_shape,
+        args.block_M, args.block_N, args.num_stages, args.threads) 

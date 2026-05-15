@@ -129,10 +129,15 @@ struct Flash_fwd_kernel_traits  {
         Tile<Int<kWarpRows>, Int<kBlockN / 4>, _4>
     >;
     static constexpr int kMmaThreads = decltype(size(TiledMma{}))::value;
-    static_assert(kMmaThreads % 32 == 0, "SM70 TiledMma must use a whole number of warps");
+    static_assert(kMmaThreads % 8 == 0, "SM70 TiledMma threads must be a multiple of atom threads (8)");
+    static_assert(kBlockN <= kHeadDim, "BlockN must be less than or equal to HeadDim of TiledMma");
+    static_assert(kBlockN % (8 * kMmaLayoutWarps) == 0, "BlockN must be evenly tiled by atoms across MMA warps");
     static_assert(kNThreads % kMmaThreads == 0, "threadblock threads must be divisible by TiledMma threads");
+    static_assert(!(kBlockN >= 32 && kMmaThreads < 16),
+                  "CRITICAL: kBlockN >= 32 requires kMmaThreads >= 16 to avoid shared memory OOB. "
+                  "Increase kMmaLayoutWarps or reduce kBlockN.");
     static constexpr bool Share_Q_K_smem = false;
-    static constexpr bool Is_Q_in_regs = false;  // P4 reverted: true causes register spill (168 regs→DRAM)
+    static constexpr bool Is_Q_in_regs = false;
 
     using SmemLayoutAtomQ = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},

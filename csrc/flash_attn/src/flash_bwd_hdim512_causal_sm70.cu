@@ -2,13 +2,13 @@
 // Splitting the different head dimensions to different files to speed up compilation.
 // This file is auto-generated. See "generate_kernels.py"
 #include "namespace_config.h"
-#include "flash_fwd_sparse_launch_template.h"
+#include "flash_bwd_launch_template.h"
 
 namespace FLASH_NAMESPACE {
 
 template<>
-void run_mha_fwd_sparse_<128, false>(Flash_fwd_params_sparse &params, cudaStream_t stream) {
-    run_mha_fwd_sparse_hdim128<false>(params, stream);
+void run_mha_bwd_<512, true>(Flash_bwd_params &params, cudaStream_t stream) {
+    run_mha_bwd_hdim512<true>(params, stream);
 }
 
 } // namespace FLASH_NAMESPACE

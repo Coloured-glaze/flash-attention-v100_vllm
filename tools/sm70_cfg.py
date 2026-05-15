@@ -89,10 +89,14 @@ def calculate_smem(config: FAConfig):
 def calculate_occupancy(config: FAConfig, spec: V100Spec, reg_estimate: int):
     n_threads = config.cta_warps * spec.threads_per_warp
     _, _, _, smem_total = calculate_smem(config)
-    blocks_by_reg = spec.max_registers_per_sm // (n_threads * reg_estimate)
+    
+    if n_threads == 0:
+        return 0, 0, 0, 0, 1, 0.0, 0
+    
+    blocks_by_reg = spec.max_registers_per_sm // (n_threads * reg_estimate) if reg_estimate > 0 else spec.max_blocks_per_sm
     blocks_by_smem = spec.max_smem_per_sm // smem_total if smem_total > 0 else spec.max_blocks_per_sm
-    blocks_by_warp = spec.max_warps_per_sm // config.cta_warps
-    blocks_by_thread = spec.max_threads_per_sm // n_threads
+    blocks_by_warp = spec.max_warps_per_sm // config.cta_warps if config.cta_warps > 0 else spec.max_blocks_per_sm
+    blocks_by_thread = spec.max_threads_per_sm // n_threads if n_threads > 0 else spec.max_blocks_per_sm
     blocks_per_sm = min(blocks_by_reg, blocks_by_smem, blocks_by_warp, blocks_by_thread, spec.max_blocks_per_sm)
     blocks_per_sm = max(1, blocks_per_sm)
     active_warps = blocks_per_sm * config.cta_warps
@@ -118,11 +122,42 @@ def analyze_config(config: FAConfig, spec: V100Spec = None) -> FAConfigResult:
     if config.block_n > config.head_dim:
         res.issues.append("kBlockN > kHeadDim (would read beyond matrix bounds)")
     
-    # 新增：SM70 要求 kMmaThreads == 32，而 kMmaThreads = 32 * kMmaLayoutWarps
-    if config.mma_layout_warps != 1 and config.cta_warps == 2:
+    # 已在后面实现正确的检查：
+    # kMmaThreads = 8 * kMmaLayoutWarps
+    # 当 kBlockN >= 32 时，要求 kMmaThreads >= 16
+    
+    # 新增：SM70 TiledMma 线程数检查
+    # kMmaThreads = 8 * kMmaLayoutWarps (每个 MMA atom 8 线程)
+    kMmaThreads = 8 * config.mma_layout_warps
+    # 当 kBlockN 较大时，需要足够的 MMA 线程来访问 shared memory
+    # 经验规则：kBlockN >= 32 时，kMmaThreads 应该 >= 16
+    if config.block_n >= 32 and kMmaThreads < 16:
         res.issues.append(
-            "kCtaWarps=2 must have kMmaLayoutWarps=1 to keep kMmaThreads=32"
+            f"CRITICAL: kBlockN={config.block_n} requires kMmaThreads>=16, "
+            f"but kMmaLayoutWarps={config.mma_layout_warps} gives only {kMmaThreads} threads. "
+            f"This will cause shared memory out-of-bounds access. "
+            f"Increase kMmaLayoutWarps to {config.mma_layout_warps * 2} or reduce kBlockN to 16."
         )
+    
+    # 检查 kGmemRowsPerThread 计算是否会除零
+    kBlockKSmem = 64 if config.head_dim % 64 == 0 else 32
+    kGmemElemsPerLoad = 16 // 2  # sizeof(uint128_t) / sizeof(Element)
+    kGmemThreadsPerRow = kBlockKSmem // kGmemElemsPerLoad if kGmemElemsPerLoad > 0 else 1
+    n_threads = config.cta_warps * spec.threads_per_warp
+    kGmemRowsPerThread_denominator = n_threads // kGmemThreadsPerRow if kGmemThreadsPerRow > 0 else 1
+    if kGmemRowsPerThread_denominator == 0:
+        res.issues.append(
+            f"kGmemRowsPerThread calculation would divide by zero: "
+            f"kBlockN={config.block_n} / (kNThreads={n_threads} / kGmemThreadsPerRow={kGmemThreadsPerRow}) = 0. "
+            f"Try reducing kCtaWarps or increasing kBlockN"
+        )
+    elif config.block_n < kGmemRowsPerThread_denominator:
+        res.issues.append(
+            f"kGmemRowsPerThread = {config.block_n} / {kGmemRowsPerThread_denominator} < 1. "
+            f"kBlockN must be >= kNThreads/kGmemThreadsPerRow. "
+            f"Try reducing kCtaWarps from {config.cta_warps} to {config.cta_warps // 2} or increasing kBlockN"
+        )
+    
     q, kv, p, total = calculate_smem(config)
     res.smem_q, res.smem_kv, res.smem_p, res.smem_total = q, kv, p, total
     if total > spec.max_smem_per_block:
@@ -165,7 +200,7 @@ def analyze_config(config: FAConfig, spec: V100Spec = None) -> FAConfigResult:
     if n_per_warp < 8:
         res.issues.append(
             f"kBlockN/kMmaLayoutWarps = {n_per_warp} < 8. "
-            "Each warp needs at least 8 N-columns for SM70 m8n8k4 MMA atom, can try --mma_layout_warps=4"
+            f"Each warp needs at least 8 N-columns for SM70 m8n8k4 MMA atom, can try -mw {1 if n_per_warp <= 4 else 4}"
         )
 
     return res
@@ -201,7 +236,8 @@ def has_hard_error(result: FAConfigResult) -> bool:
             "MMA atom N",
             "beyond matrix bounds",
             "kBlockN/kMmaLayoutWarps",
-            "exceeds 96KB"          # 新增：共享内存超限
+            "exceeds 96KB",          # 新增：共享内存超限
+            "CRITICAL:",             # 新增：严重错误（如 shared memory 越界）
         ]):
             return True
     return False
@@ -219,19 +255,31 @@ def rank_by_estimated_tflops(configs: List[FAConfig], spec: V100Spec = None):
     results.sort(key=lambda x: -x[1])
     return results
 
-def print_result(result: FAConfigResult, score=None):
+def calculate_grid(seqlen_q: int, block_m: int, batch_size: int = 1, num_heads: int = 1):
+    num_m_block = math.ceil(seqlen_q / block_m)
+    return num_m_block, batch_size, num_heads
+
+def print_result(result: FAConfigResult, score=None, seqlen_q=None, batch_size=1, num_heads=1):
     c = result.config
     print(f"  Config: kHeadDim={c.head_dim}, kBlockM={c.block_m}, kBlockN={c.block_n}, "
           f"kWarpCount={c.cta_warps}, kMmaLayoutWarps={c.mma_layout_warps}")
     print(f"  Derived: {result.n_threads} threads, kWarpRows={result.warp_rows}")
     print(f"  SMEM: Q={result.smem_q/1024:.1f}K KV={result.smem_kv/1024:.1f}K P={result.smem_p/1024:.1f}K "
           f"Total={result.smem_total/1024:.1f}K")
-    print(f"  Blocks/SM: {result.blocks_per_sm}  Regs/thread: {result.reg_estimate}  "
-          f"Occupancy: {result.occupancy_pct:.1f}%")
-    print(f"  Registers: {result.blocks_by_reg} blocks/SM | SMEM: {result.blocks_by_smem} blocks/SM |"
-          f" Warps: {result.blocks_by_warp} blocks/SM | Threads: {result.blocks_by_thread} blocks/SM")
-    print(f"  AI: {result.arithmetic_intensity:.0f} FLOPS/byte  Bottleneck: {result.roofline_bound}")
-    print(f"  Est. TFlops: {result.estimated_tflops:.1f}")
+    print(f"  Registers/Block: {result.reg_estimate * result.n_threads}  "
+          f"({result.reg_estimate * result.n_threads / result.spec.max_registers_per_sm * 100:.1f}% of 65536/SM)"
+          f" Regs/thread: {result.reg_estimate} ")
+    print(f"  Blocks/SM: {result.blocks_per_sm} | Registers: {result.blocks_by_reg} blocks/SM | SMEM: {result.blocks_by_smem} blocks/SM |"
+          f"  Warps: {result.blocks_by_warp} blocks/SM | Threads: {result.blocks_by_thread} blocks/SM")
+    print(f"  Est. TFlops: {result.estimated_tflops:.1f} | Occupancy: {result.occupancy_pct:.1f}% "
+          f"| AI: {result.arithmetic_intensity:.0f} FLOPS/byte | Bottleneck: {result.roofline_bound}")
+
+    if seqlen_q is not None:
+        grid_x, grid_y, grid_z = calculate_grid(seqlen_q, c.block_m, batch_size, num_heads)
+        total_blocks = grid_x * grid_y * grid_z
+        print(f"  Grid: ({grid_x}, {grid_y}, {grid_z}) | Total Blocks: {total_blocks} "
+              f"(batch={batch_size}, seqlen_q={seqlen_q}, heads={num_heads}, dim={c.head_dim})")
+
     if result.recommendations:
         for r in result.recommendations:
             print(f"  -> {r}")
@@ -258,6 +306,28 @@ def evaluate_config_for_seqlen(config: FAConfig, seqlen: int, spec: V100Spec) ->
 
     return base_tflops * iter_efficiency * parallel_eff
 
+def _select_best_config(candidates, spec, prefer_high_ai=True, prefer_occupancy=False):
+    if not candidates:
+        return None
+    if prefer_high_ai and prefer_occupancy:
+        return max(candidates, key=lambda c: (
+            analyze_config(c, spec).estimated_tflops *
+            analyze_config(c, spec).blocks_per_sm
+        ))
+    elif prefer_high_ai:
+        return max(candidates, key=lambda c: analyze_config(c, spec).estimated_tflops)
+    elif prefer_occupancy:
+        return max(candidates, key=lambda c: (
+            analyze_config(c, spec).occupancy_pct * analyze_config(c, spec).blocks_per_sm
+        ))
+    else:
+        return max(candidates, key=lambda c: analyze_config(c, spec).estimated_tflops)
+
+
+def _fmt_kernel(hdim, cfg):
+    return f"Flash_fwd_kernel_traits<{hdim}, {cfg.block_m}, {cfg.block_n}, {cfg.cta_warps}, {cfg.mma_layout_warps}>"
+
+
 def generate_dispatch_table(head_dims, seqlen_ranges, spec=None):
     if spec is None:
         spec = V100Spec()
@@ -273,55 +343,117 @@ def generate_dispatch_table(head_dims, seqlen_ranges, spec=None):
 
         best_configs = []
         for threshold in sorted_ranges:
-            if threshold >= 2048:   # 长序列：优先大 kBlockM（高算术强度）
-                # 只考虑 block_m >= 128 的配置，在其中选 estimated_tflops 最高
+            if threshold >= 2048:
                 candidates_subset = [c for c in valid if c.block_m >= 128]
                 if not candidates_subset:
                     candidates_subset = valid
                 best_cfg = max(candidates_subset, key=lambda c: analyze_config(c, spec).estimated_tflops)
-            elif threshold >= 1024: # 中等序列：兼顾算术强度与占用率
+            elif threshold >= 1024:
                 best_cfg = max(valid, key=lambda c: (
                     analyze_config(c, spec).occupancy_pct *
                     analyze_config(c, spec).arithmetic_intensity
                 ))
-            else:                   # 短序列：更看重占用率，以及更少的 KV 迭代次数
+            else:
                 best_cfg = max(valid, key=lambda c: (
                     analyze_config(c, spec).occupancy_pct -
-                    0.1 * (threshold // c.block_n)  # 轻微惩罚高 KV 迭代次数
+                    0.1 * (threshold // c.block_n)
                 ))
             best_configs.append((threshold, best_cfg))
 
-        # 输出 if/else 块
         for idx, (threshold, cfg) in enumerate(best_configs):
-            mma_layout = cfg.mma_layout_warps  # 直接使用配置中的值
             if idx == 0:
                 print(f"    // hdim={hdim} seqlen_q >= {threshold} ")
                 print(f"    if (params.seqlen_q >= {threshold}) {{")
-                print(f"        run_flash_fwd<Flash_fwd_kernel_traits<{hdim}, {cfg.block_m}, {cfg.block_n}, {cfg.cta_warps}, {mma_layout}>, Is_dropout, Is_causal>(params, stream);")
+                print(f"        run_flash_fwd<{_fmt_kernel(hdim, cfg)}, Is_dropout, Is_causal>(params, stream);")
             else:
                 prev_threshold = best_configs[idx-1][0]
                 print(f"    // hdim={hdim} {prev_threshold} > seqlen_q >= {threshold}")
                 print(f"    }} else if (params.seqlen_q >= {threshold}) {{")
-                print(f"        run_flash_fwd<Flash_fwd_kernel_traits<{hdim}, {cfg.block_m}, {cfg.block_n}, {cfg.cta_warps}, {mma_layout}>, Is_dropout, Is_causal>(params, stream);")
+                print(f"        run_flash_fwd<{_fmt_kernel(hdim, cfg)}, Is_dropout, Is_causal>(params, stream);")
 
         last_threshold = best_configs[-1][0]
         last_cfg = best_configs[-1][1]
-        mma_layout_last = last_cfg.mma_layout_warps
         print(f"    // hdim={hdim} seqlen_q < {last_threshold}")
         print(f"    }} else {{")
-        print(f"        run_flash_fwd<Flash_fwd_kernel_traits<{hdim}, {last_cfg.block_m}, {last_cfg.block_n}, {last_cfg.cta_warps}, {mma_layout_last}>, Is_dropout, Is_causal>(params, stream);")
+        print(f"        run_flash_fwd<{_fmt_kernel(hdim, last_cfg)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"    }}")
+        print()
+
+
+def generate_cross_attn_dispatch(head_dims, spec=None):
+    if spec is None:
+        spec = V100Spec()
+
+    KV_THRESHOLDS = [256, 1024]
+    Q_LONG_THRESHOLD = 2048
+
+    print("// Auto-generated cross-attention-aware dispatch logic for V100 SM70")
+    print("// Considers both seqlen_q and seqlen_k for optimal kernel selection\n")
+
+    for hdim in head_dims:
+        print(f"// ----- HeadDim={hdim} -----")
+        all_candidates = generate_candidate_configs(hdim)
+        valid = [c for c in all_candidates if not has_hard_error(analyze_config(c, spec))]
+
+        high_ai_cfgs = [c for c in valid if c.block_m >= 128 and c.cta_warps >= 8]
+        if not high_ai_cfgs:
+            high_ai_cfgs = [c for c in valid if c.block_m >= 128]
+        med_cfgs = [c for c in valid if 64 <= c.block_m < 128 and c.cta_warps == 4]
+        if not med_cfgs:
+            med_cfgs = [c for c in valid if c.block_m >= 64 and c.cta_warps == 4]
+        small_cfgs = [c for c in valid if c.block_m <= 64 and c.cta_warps == 4]
+        if not small_cfgs:
+            small_cfgs = [c for c in valid if c.block_m <= 64]
+
+        cfg_long_q_long_kv = _select_best_config(high_ai_cfgs, spec, prefer_high_ai=True)
+        cfg_long_q_med_kv = _select_best_config(
+            [c for c in med_cfgs if c.block_n >= 32], spec, prefer_high_ai=True, prefer_occupancy=True)
+        cfg_long_q_short_kv = _select_best_config(
+            [c for c in small_cfgs if c.block_n <= 64], spec, prefer_occupancy=True)
+        cfg_short_q_long_kv = _select_best_config(
+            [c for c in med_cfgs if c.block_n >= 32], spec, prefer_high_ai=True, prefer_occupancy=True)
+        cfg_short_q_med_kv = _select_best_config(
+            [c for c in med_cfgs if c.block_n <= 64], spec, prefer_occupancy=True)
+        cfg_short_q_short_kv = _select_best_config(
+            [c for c in small_cfgs if c.block_n <= 64], spec, prefer_occupancy=True)
+
+        if not all([cfg_long_q_long_kv, cfg_long_q_med_kv, cfg_long_q_short_kv,
+                     cfg_short_q_long_kv, cfg_short_q_med_kv, cfg_short_q_short_kv]):
+            print(f"    // WARNING: Could not find all configs for hdim={hdim}, falling back to simple dispatch")
+            generate_dispatch_table([hdim], [2048, 1024, 512], spec)
+            continue
+
+        print(f"    if (params.seqlen_q >= {Q_LONG_THRESHOLD}) {{")
+        print(f"        if (params.seqlen_k <= {KV_THRESHOLDS[0]}) {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_long_q_short_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }} else if (params.seqlen_k <= {KV_THRESHOLDS[1]}) {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_long_q_med_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }} else {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_long_q_long_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }}")
+        print(f"    }} else {{")
+        print(f"        if (params.seqlen_k <= {KV_THRESHOLDS[0]}) {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_short_q_short_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }} else if (params.seqlen_k <= {KV_THRESHOLDS[1]}) {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_short_q_med_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }} else {{")
+        print(f"            run_flash_fwd<{_fmt_kernel(hdim, cfg_short_q_long_kv)}, Is_dropout, Is_causal>(params, stream);")
+        print(f"        }}")
         print(f"    }}")
         print()
 
 def main():
     parser = argparse.ArgumentParser(description="V100 SM70 FA config optimizer")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for analysis")
+    parser.add_argument("--num_heads", type=int, default=10, help="Number of attention heads")
     parser.add_argument("--head_dim", type=int, nargs="+", default=[128],
                         help="Head dimensions to analyze (e.g. 64 96 128 )")
     parser.add_argument("--seqlen_ranges", type=int, nargs="+", default=[2048, 1024, 512],
                         help="Sequence length thresholds for dispatch generation (descending)")
 
-    parser.add_argument("--show_all", action="store_true", help="Print all valid configs, not just top ones")
+    parser.add_argument("--all", action="store_true", help="Print all valid configs, not just top ones")
     parser.add_argument("--dispatch_only", action="store_true", help="Only print dispatch code")
+    parser.add_argument("--cross_attn", action="store_true", help="Generate cross-attention-aware dispatch (seqlen_q + seqlen_k)")
 
     parser.add_argument("--block_m", type=int, default=None,
                         help="Analyze a single specific block_m (overrides ranking)")
@@ -330,7 +462,7 @@ def main():
     parser.add_argument("--warps", type=int, default=8,
                         help="Number of warps when analyzing a single config")
 
-    parser.add_argument("--mma_layout_warps", type=int, default=0,
+    parser.add_argument("-mw", "--mma_layout_warps", type=int, default=0,
                         help="kMmaLayoutWarps (default: auto-deducted)")
     args = parser.parse_args()
 
@@ -348,7 +480,7 @@ def main():
         config = FAConfig(hdim, args.block_m, args.block_n, args.warps, mma_layout)
         result = analyze_config(config, spec)
         print(f"Single Config Analysis for HeadDim={hdim}:")
-        print_result(result)
+        print_result(result, seqlen_q=args.seqlen_ranges[0], batch_size=args.batch_size, num_heads=args.num_heads)
         return                                      # 结束，不再执行后续排名和调度
 
     # ---------- 原有多配置排名与调度模式 ----------
@@ -359,13 +491,17 @@ def main():
             print(f"{'='*60}")
             configs = generate_candidate_configs(hdim)
             ranked = rank_by_estimated_tflops(configs, spec)
-            top_n = len(ranked) if args.show_all else 5
+            top_n = len(ranked) if args.all else 5
             for i, (res, score) in enumerate(ranked[:top_n]):
                 print(f"--- Rank #{i+1} (est. {score:.2f} TFlops) ---")
                 print_result(res)
                 print()
 
     generate_dispatch_table(args.head_dim, args.seqlen_ranges, spec)
+
+    if args.cross_attn:
+        print("// Cross-Attention-Aware Dispatch (seqlen_q + seqlen_k)")
+        generate_cross_attn_dispatch(args.head_dim, spec)
 
 if __name__ == "__main__":
     main()
