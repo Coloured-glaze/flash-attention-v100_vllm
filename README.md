@@ -6,6 +6,9 @@
 
 ![Qwen3.5-27B q8k Performance](assets/Perf__opt_Qwen3.5-27B_c1_2026-04-05_08_03_48.png)
 
+### 与 SDPA EA 比较
+![V100 Attention Forward TFLOPs](assets/flops_(2,40,16384,64)_(2,40,16384,64).png)
+
 ## 使用方法
 
 ```bash

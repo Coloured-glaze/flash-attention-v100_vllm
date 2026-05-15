@@ -53,5 +53,4 @@ tests/ncu_analyse/tile_flash*.cu
 tests/ncu_analyse/tile_fa_dim*
 dim*_*.txt
 autotuner*
-
 sm70_fa_config*

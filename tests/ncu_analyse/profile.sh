@@ -5,12 +5,13 @@ file_name="prof"
 
 echo "git commit: ${git_commit}" > ${file_name}_${time}_${git_commit}.txt
 
-export CUDA_LAUNCH_BLOCKING=1
-export TORCH_USE_CUDA_DSA=1
+export CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1
 
 echo "start benchmark at ${time}" \
 && \
 compute-sanitizer --print-limit 1 python test_vllm_flash_attn.py --flops --flops_num 5 --fa \
+&& \
+export CUDA_LAUNCH_BLOCKING=0 TORCH_USE_CUDA_DSA=0 \
 && \
 python test_vllm_flash_attn.py --flops --profile --fa --sdpa >> ${file_name}_${time}_${git_commit}.txt \
 && \
@@ -18,8 +19,6 @@ echo "benchmark done at ${time}"
 
 echo "start profile analysis"
 
-export CUDA_LAUNCH_BLOCKING=0
-export TORCH_USE_CUDA_DSA=0
 
 KERNEL_REGEX='.*fwd.*'
 

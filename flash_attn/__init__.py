@@ -15,3 +15,5 @@ __all__ = [
     "get_scheduler_metadata",
     "is_fa_version_supported",
 ]
+
+flash_attn_interface = __all__

@@ -9,7 +9,6 @@ import torch
 # Use relative import to support build-from-source installation in vLLM
 
 from . import _vllm_fa2_C  # noqa: F401
-
 # isort: on
 
 DEFAULT_FA_VERSION = 2
@@ -32,11 +31,41 @@ def is_fa_version_supported(fa_version: int, device = None) -> bool:
 def fa_version_unsupported_reason(fa_version: int, device = None) \
     -> Optional[str]: return None
 
-#
 #  For vLLM we only care about `flash_attn_varlen_func` and 
 #   `flash_attn_with_kvcache` so we only maintain wrappers for these two.
-#
 
+
+def _get_device():
+    if torch.xpu.is_available():
+        return "xpu"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
+def round_multiple(x, m):
+    return (x + m - 1) // m * m
+# torch.compile() support is only enabled for pytorch >= 2.4
+# The reason for this is that we are using the new custom_op and register_fake
+# APIs, which support inplace modification of inputs in the function itself
+if torch.__version__ >= "2.4.0":
+    _torch_custom_op_wrapper = torch.library.custom_op
+    _torch_register_fake_wrapper = torch.library.register_fake
+else:
+    def noop_custom_op_wrapper(name, fn=None, /, *, mutates_args, device_types=None, schema=None):
+        def wrap(func):
+            return func
+        if fn is None:
+            return wrap
+        return fn
+    def noop_register_fake_wrapper(op, fn=None, /, *, lib=None, _stacklevel=1):
+        def wrap(func):
+            return func
+        if fn is None:
+            return wrap
+        return fn
+    _torch_custom_op_wrapper = noop_custom_op_wrapper
+    _torch_register_fake_wrapper = noop_register_fake_wrapper
 
 def maybe_contiguous(x):
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
@@ -341,3 +370,95 @@ def flash_attn_varlen_func(
     else:
         raise ValueError(f"Unsupported FA version: {fa_version}")
     return (out, softmax_lse) if return_softmax_lse else out
+
+
+@_torch_custom_op_wrapper("flash_attn::_flash_attn_backward", mutates_args=("dq", "dk", "dv"), device_types=_get_device())
+def _flash_attn_backward(
+    dout: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    softmax_lse: torch.Tensor,
+    dq: Optional[torch.Tensor],
+    dk: Optional[torch.Tensor],
+    dv: Optional[torch.Tensor],
+    dropout_p: float,
+    softmax_scale: float,
+    causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    softcap: float,
+    alibi_slopes: Optional[torch.Tensor],
+    deterministic: bool,
+    rng_state: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    # dq, dk, dv are allocated by us so they should already be contiguous
+    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+    (
+        dq,
+        dk,
+        dv,
+        softmax_d,
+    ) = _vllm_fa2_C.bwd(
+        dout,
+        q,
+        k,
+        v,
+        out,
+        softmax_lse,
+        dq,
+        dk,
+        dv,
+        alibi_slopes,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size_left,
+        window_size_right,
+        softcap,
+        deterministic,
+        None,
+        rng_state,
+    )
+    return softmax_d
+
+
+@_torch_register_fake_wrapper("flash_attn::_flash_attn_backward")
+def _flash_attn_backward_fake(
+    dout: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    softmax_lse: torch.Tensor,
+    dq: Optional[torch.Tensor],
+    dk: Optional[torch.Tensor],
+    dv: Optional[torch.Tensor],
+    dropout_p: float,
+    softmax_scale: float,
+    causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    softcap: float,
+    alibi_slopes: Optional[torch.Tensor],
+    deterministic: bool,
+    rng_state: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+    if dq is None:
+        dq = torch.empty_like(q)
+    if dk is None:
+        dk = torch.empty_like(k)
+    if dv is None:
+        dv = torch.empty_like(v)
+    batch_size, seqlen_q, num_heads, _ = q.shape
+    softmax_d = torch.empty((batch_size, num_heads, round_multiple(seqlen_q, 128)), device=q.device, dtype=torch.float32)
+    
+    return softmax_d
+
+
+if torch.__version__ >= "2.4.0":
+    _wrapped_flash_attn_backward = torch.ops.flash_attn._flash_attn_backward
+else:
+    _wrapped_flash_attn_backward = _flash_attn_backward

@@ -25,6 +25,7 @@ import torch, math, os
 import torch.nn.functional as F
 # from torch.nn.attention import SDPBackend, sdpa_kernel
 import argparse
+import matplotlib.pyplot as plt
 
 
 def ref_program(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor, is_causal: bool = False):
@@ -127,6 +128,17 @@ def torch_profile(
 # ==========================================================================================
 
 # region flops test
+plot_data = {
+    'q_shapes': [],
+    'kv_shapes': [],
+    'fa_tflops': [],
+    'fa_latency': [],
+    'tile_tflops': [],
+    'tile_latency': [],
+    'sdpa_tflops': [],
+    'sdpa_latency': [],
+}
+
 def flops(
     args, num, q_shape, kv_shape,
     block_M=128, block_N=64, num_stages=1, threads=256, 
@@ -192,23 +204,29 @@ def flops(
         if not torch.allclose(tile_result, sdpa_result, atol=5e-4, rtol=5e-4):
             print("Tile Flash Attention and Ref torch results do not match.")
 
+    fa_latency = None; tile_latency = None; sdpa_latency = None
+    fa_tflops = None; tile_tflops = None; sdpa_tflops = None
+    
     if args.fa:
         fa_latency = do_bench(fn=lambda: ref_program_fa(query, key, value), rep=num, warmup=int(num/2))
+        fa_tflops = total_flops / fa_latency * 1e-9
         print(f"VLLM Flash Attention: {fa_latency:.3f} ms")
-        print(f"VLLM Flash Attention: {total_flops / fa_latency * 1e-9:.3f} TFlops")
+        print(f"VLLM Flash Attention: {fa_tflops:.3f} TFlops")
 
     if args.tile:
         if attn_mask:
             tile_latency = do_bench(fn=lambda: kernel(query, key, value, mask), rep=num, warmup=int(num/2))
         else:   
             tile_latency = do_bench(fn=lambda: kernel(query, key, value), rep=num, warmup=int(num/2))
+        tile_tflops = total_flops / tile_latency * 1e-9
         print(f"Tile Flash Attention: {tile_latency:.3f} ms")
-        print(f"Tile Flash Attention: {total_flops / tile_latency * 1e-9:.3f} TFlops")
+        print(f"Tile Flash Attention: {tile_tflops:.3f} TFlops")
     
     if args.sdpa :
         sdpa_latency = do_bench(fn=lambda: ref_program(query, key, value, mask, is_causal), rep=num, warmup=int(num/2))
+        sdpa_tflops = total_flops / sdpa_latency * 1e-9
         print(f"Ref SDPA: {sdpa_latency:.3f} ms")
-        print(f"Ref SDPA: {total_flops / sdpa_latency * 1e-9:.3f} TFlops")
+        print(f"Ref SDPA: {sdpa_tflops:.3f} TFlops")
 
     if (fa_result is not None) and (sdpa_result is not None) :
         vllm_fa_speed_up = (1 - (float(fa_latency) / float(sdpa_latency)) ) * 100
@@ -219,6 +237,19 @@ def flops(
         tile_speed_up = (1 - (float(tile_latency) / float(sdpa_latency)) ) * 100
         torch.testing.assert_close(tile_result, sdpa_result, rtol=5e-4, atol=5e-4)
         print(f"tile result checks pass. tile speed up: {tile_speed_up:.2f}%\n")
+    
+    if args.plot:
+        plot_data['q_shapes'].append(q_shape)
+        plot_data['kv_shapes'].append(kv_shape)
+        if fa_tflops is not None:
+            plot_data['fa_tflops'].append(fa_tflops)
+            plot_data['fa_latency'].append(fa_latency)
+        if tile_tflops is not None:
+            plot_data['tile_tflops'].append(tile_tflops)
+            plot_data['tile_latency'].append(tile_latency)
+        if sdpa_tflops is not None:
+            plot_data['sdpa_tflops'].append(sdpa_tflops)
+            plot_data['sdpa_latency'].append(sdpa_latency)
 
 
 # region run test
@@ -241,6 +272,8 @@ if __name__ == "__main__":
     parser.add_argument("--seq_len", type=int, default=4096, help="Sequence length")
     parser.add_argument("--head_dim", type=int, default=128, help="Head dimension")
     
+    parser.add_argument("--plot", action="store_true", help="Plot q_shape, kv_shape, tflops and time charts when running flops test")
+    
     args = parser.parse_args()
 
     # q_shape = (args.batch, args.n_heads, args.seq_len, args.head_dim) 
@@ -248,6 +281,11 @@ if __name__ == "__main__":
 
     q_shape_list = []
     kv_shape_list = []
+
+    # q_shape = (1, 1, 4096, args.head_dim) 
+    # kv_shape = (1, 1, 4096, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
 
     q_shape = (2, 20, 1024, args.head_dim) 
     kv_shape = (2, 20, 77, args.head_dim) 
@@ -264,15 +302,15 @@ if __name__ == "__main__":
     q_shape_list.append(q_shape)
     kv_shape_list.append(kv_shape)
 
-    q_shape = (8, 10, 512, args.head_dim) 
-    kv_shape = (8, 10, 512, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
-
-    # q_shape = (8, 10, 1536, args.head_dim) 
-    # kv_shape = (8, 10, 1536, args.head_dim) 
+    # q_shape = (8, 10, 512, args.head_dim) 
+    # kv_shape = (8, 10, 512, args.head_dim) 
     # q_shape_list.append(q_shape)
     # kv_shape_list.append(kv_shape)
+
+    q_shape = (8, 10, 1024, args.head_dim) 
+    kv_shape = (8, 10, 1024, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
 
     # q_shape = (8, 10, 2048, args.head_dim) 
     # kv_shape = (8, 10, 2048, args.head_dim) 
@@ -286,6 +324,11 @@ if __name__ == "__main__":
 
     # q_shape = (2, 40, 8192, args.head_dim) 
     # kv_shape = (2, 40, 8192, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    # q_shape = (2, 40, 16384, args.head_dim) 
+    # kv_shape = (2, 40, 16384, args.head_dim) 
     # q_shape_list.append(q_shape)
     # kv_shape_list.append(kv_shape)
 
@@ -303,6 +346,108 @@ if __name__ == "__main__":
                 q_shape=q_shape, kv_shape=kv_shape,
                 block_M=128, block_N=64, num_stages=1, threads=256, 
             )
+    
+    if args.flops and args.plot and plot_data['q_shapes']:
+        print("\n=== Generating plots ===")
+        x_labels_q = [str(tuple(q)) for q in plot_data['q_shapes']]
+        x_labels_kv = [str(tuple(kv)) for kv in plot_data['kv_shapes']]
+        x_labels = [f"{q}\n{kv}" for q, kv in zip(x_labels_q, x_labels_kv)]
+        x = range(len(x_labels))
+        
+        # 根据数据点数量动态调整柱宽和图表大小
+        num_points = len(x_labels)
+        width = 0.8 / (len([k for k in ['fa_tflops', 'tile_tflops', 'sdpa_tflops'] if plot_data[k]]) + 1)
+        figsize_width = min(18, max(12, num_points * 2.5))
+        
+        colors = {
+            'fa': '#1f77b4',      # blue
+            'tile': '#ff7f0e',    # orange
+            'sdpa': '#2ca02c',    # green
+        }
+        
+        # 动态调整字体大小
+        label_fontsize = max(6, min(9, 12 - num_points))
+        value_fontsize = max(5, min(8, 10 - num_points))
+        
+        fig, axes = plt.subplots(1, 2, figsize=(figsize_width, 6))
+        
+        # TFLOPs chart
+        ax1 = axes[0]
+        offset1 = 0
+        if plot_data['fa_tflops']:
+            rects = ax1.bar([i + offset1 for i in x], plot_data['fa_tflops'], width, 
+                           label='FlashAttention', color=colors['fa'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax1.annotate(f'{height:.1f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+            offset1 += width
+        if plot_data['tile_tflops']:
+            rects = ax1.bar([i + offset1 for i in x], plot_data['tile_tflops'], width,
+                           label='TileLang', color=colors['tile'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax1.annotate(f'{height:.1f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+            offset1 += width
+        if plot_data['sdpa_tflops']:
+            rects = ax1.bar([i + offset1 for i in x], plot_data['sdpa_tflops'], width,
+                           label='SDPA', color=colors['sdpa'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax1.annotate(f'{height:.1f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+        
+        ax1.set_ylabel('Speed (TFLOP/s)', fontsize=12)
+        ax1.set_xlabel('Sequence length', fontsize=12)
+        ax1.set_title(f'v100 Attention forward TFLOPs hdim {args.head_dim}', fontsize=13)
+        ax1.set_xticks([i + width/2 for i in x])
+        ax1.set_xticklabels(x_labels, fontsize=label_fontsize, rotation=0)
+        ax1.legend(loc='upper left', fontsize=10)
+        ax1.set_axisbelow(True)
+        ax1.grid(True, axis='y', linestyle='--', alpha=0.3)
+        
+        # Latency chart
+        ax2 = axes[1]
+        offset2 = 0
+        if plot_data['fa_latency']:
+            rects = ax2.bar([i + offset2 for i in x], plot_data['fa_latency'], width,
+                           label='FlashAttention', color=colors['fa'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax2.annotate(f'{height:.3f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+            offset2 += width
+        if plot_data['tile_latency']:
+            rects = ax2.bar([i + offset2 for i in x], plot_data['tile_latency'], width,
+                           label='TileLang', color=colors['tile'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax2.annotate(f'{height:.3f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+            offset2 += width
+        if plot_data['sdpa_latency']:
+            rects = ax2.bar([i + offset2 for i in x], plot_data['sdpa_latency'], width,
+                           label='SDPA', color=colors['sdpa'], edgecolor='black', linewidth=0.5)
+            for rect in rects:
+                height = rect.get_height()
+                ax2.annotate(f'{height:.3f}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                           ha='center', va='bottom', fontsize=value_fontsize, xytext=(0, 2), textcoords='offset points')
+        
+        ax2.set_ylabel('Latency (ms)', fontsize=12)
+        ax2.set_xlabel('Sequence length', fontsize=12)
+        ax2.set_title(f'v100 Attention latency hdim {args.head_dim}', fontsize=13)
+        ax2.set_xticks([i + width/2 for i in x])
+        ax2.set_xticklabels(x_labels, fontsize=label_fontsize, rotation=0)
+        ax2.legend(loc='upper left', fontsize=10)
+        ax2.set_axisbelow(True)
+        ax2.grid(True, axis='y', linestyle='--', alpha=0.3)
+        
+        save_plot = f'flops_{str(q_shape).replace(" ", "")}_{str(kv_shape).replace(" ", "")}.png'
+        plt.tight_layout(); 
+        plt.savefig(save_plot, dpi=150, bbox_inches='tight')
+        print(f"Plot saved as {save_plot}")
+        plt.show()
 
 
 Pytorch_AttentionKernel_Generator = """
