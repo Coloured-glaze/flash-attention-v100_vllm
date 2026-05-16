@@ -282,10 +282,40 @@ if __name__ == "__main__":
     q_shape_list = []
     kv_shape_list = []
 
-    # q_shape = (1, 1, 4096, args.head_dim) 
-    # kv_shape = (1, 1, 4096, args.head_dim) 
+    # q_shape = (1, 40, 1, args.head_dim) 
+    # kv_shape = (1, 40, 512, args.head_dim) 
     # q_shape_list.append(q_shape)
     # kv_shape_list.append(kv_shape)
+
+    # q_shape = (1, 40, 1, args.head_dim) 
+    # kv_shape = (1, 40, 560, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    # q_shape = (1, 40, 1, args.head_dim) 
+    # kv_shape = (1, 40, 4096, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    # q_shape = (1, 40, 1, args.head_dim) 
+    # kv_shape = (1, 40, 8192, args.head_dim) 
+    # q_shape_list.append(q_shape)
+    # kv_shape_list.append(kv_shape)
+
+    q_shape = (1, 40, 1, args.head_dim) 
+    kv_shape = (1, 40, 16384, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    q_shape = (1, 40, 1, args.head_dim) 
+    kv_shape = (1, 40, 32768, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
+
+    q_shape = (1, 40, 1, args.head_dim) 
+    kv_shape = (1, 40, 65536, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
 
     q_shape = (2, 20, 1024, args.head_dim) 
     kv_shape = (2, 20, 77, args.head_dim) 
@@ -322,15 +352,15 @@ if __name__ == "__main__":
     q_shape_list.append(q_shape)
     kv_shape_list.append(kv_shape)
 
-    # q_shape = (2, 40, 8192, args.head_dim) 
-    # kv_shape = (2, 40, 8192, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    q_shape = (2, 40, 8192, args.head_dim) 
+    kv_shape = (2, 40, 8192, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
 
-    # q_shape = (2, 40, 16384, args.head_dim) 
-    # kv_shape = (2, 40, 16384, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    q_shape = (2, 40, 16384, args.head_dim) 
+    kv_shape = (2, 40, 16384, args.head_dim) 
+    q_shape_list.append(q_shape)
+    kv_shape_list.append(kv_shape)
 
     for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
         if args.profile:

@@ -34,7 +34,7 @@ envs = Envs(
     VLLM_TARGET_DEVICE=os.getenv("VLLM_TARGET_DEVICE", "cuda"),
     CMAKE_BUILD_TYPE=os.getenv("CMAKE_BUILD_TYPE"),
     FA_HDIM=os.getenv("FA_HDIM", ""), # 指定编译FA的头维度，快速测试内核，例如 export FA_HDIM=128 , export FA_HDIM=32,64 
-    SHOW_PTX=os.getenv("SHOW_PTX", None),
+    SHOW_PTX=os.getenv("SHOW_PTX", None), # 显示 ptx 信息 ，例如 export SHOW_PTX=1
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
