@@ -1,4 +1,4 @@
-name: Build Wheels
+name: Manual Build Wheels
 
 on:
   workflow_dispatch:
@@ -208,7 +208,7 @@ jobs:
         if: ${{ inputs.release == '1' }}
         uses: softprops/action-gh-release@v2.6.2
         with:
-          tag_name: v${{ env.WHL_VERSION }}-py${{ matrix.pyver }}-cu${{ matrix.cuda }}-${{ matrix.os }}-${{ env.BUILD_DATE }}
+          tag_name: v${{ env.WHL_VERSION }}-py${{ matrix.pyver }}-th${{ inputs.torch_version }}-cu${{ matrix.cuda }}-${{ matrix.os }}-${{ env.BUILD_DATE }}
           files: dist/*.whl
           generate_release_notes: true
         env:
