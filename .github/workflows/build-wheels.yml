@@ -1,4 +1,4 @@
-name: Manual Build Wheels
+na5me: Manual Build Wheels
 
 on:
   workflow_dispatch:
@@ -197,7 +197,7 @@ jobs:
         run: |
           PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu${{ inputs.cuda_ver }}"
           python -m pip install --no-cache-dir -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
-          python -m pip install --no-cache-dir ninja cmake==3.28.0 numpy==1.26.2 wheel setuptools build packaging 
+          python -m pip install --no-cache-dir ninja cmake==3.30 numpy==1.26.2 wheel setuptools build packaging 
       
       - name: Build wheel
         shell: bash
