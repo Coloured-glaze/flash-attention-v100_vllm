@@ -76,9 +76,14 @@ jobs:
     steps:
       - name: Add MSBuild to PATH
         if: runner.os == 'Windows'
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
         with:
           msbuild-architecture: x64
+
+      - name: check cl version
+        if: runner.os == 'Windows'
+        run: |
+          cl -version
 
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -185,14 +190,14 @@ jobs:
         shell: bash
         run: |
           PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu${{ inputs.cuda_ver }}"
-          python -m pip install --no-cache-dir wheel -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
-          python -m pip install --no-cache-dir ninja cmake==3.30.0 numpy==1.26.2 setuptools build 
+          python -m pip install --no-cache-dir -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
+          python -m pip install --no-cache-dir ninja cmake==3.28.0 numpy==1.26.2 wheel setuptools build packaging 
       
       - name: Build wheel
-        shell: bash -l {0}
+        shell: bash
         run: |
-          python setup.py bdist_wheel -d dist/ $PLAT_ARG
-          python -m pip install dist/vllm_flash_attn*.whl
+          python setup.py bdist_wheel -d dist/ $PLAT_ARG && \
+          python -m pip install dist/vllm_flash_attn*.whl && \
           python -c "import vllm_flash_attn; print(vllm_flash_attn.__version__); dir(vllm_flash_attn)"
 
       - name: List wheel distributions
