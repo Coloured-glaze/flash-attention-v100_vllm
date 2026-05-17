@@ -80,9 +80,15 @@ jobs:
         with:
           msbuild-architecture: x64
 
-      - name: check cl version
+      - name: Setup MSVC developer command prompt
         if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+
+      - name: Check MSVC compiler
+        if: runner.os == 'Windows'
+        shell: bash
         run: |
+          which cl || where cl
           cl 
 
       - name: Checkout repository
