@@ -1,4 +1,4 @@
-na5me: Manual Build Wheels
+name: Manual Build Wheels
 
 on:
   workflow_dispatch:
