@@ -142,12 +142,30 @@ jobs:
             echo "$key=$value" >> $GITHUB_ENV
           done
 
+      - name: Set CUDA version
+        shell: python
+        run: |
+          import os
+          cuda_map = {
+            "124": "12.4.1",
+            "126": "12.6.1",
+            "128": "12.8.1",
+            "129": "12.9.1"
+          }
+          cuda_short = "${{ matrix.cuda }}"
+          cuda_full = cuda_map.get(cuda_short, f"12.{cuda_short[1:]}.1")
+          print(f"CUDA {cuda_short} -> {cuda_full}")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+            f.write(f"CUDA_VERSION={cuda_full}\n")
+            f.write(f"CUDA_SHORT={cuda_short}\n")
+          print(f"CUDA_VERSION={cuda_full}")
+
       # from kingbri1/flash-attention build-wheels.yml
-      - name: Install CUDA ${{ matrix.cuda }}
+      - name: Install CUDA ${{ env.CUDA_VERSION }}
         uses: N-Storm/cuda-toolkit@v0.2.29
         id: cuda-toolkit
         with:
-          cuda: "${{ matrix.cuda }}"
+          cuda: "${{ env.CUDA_VERSION }}"
           use-github-cache: false
 
       - name: Print CUDA version
