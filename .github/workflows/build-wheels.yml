@@ -58,7 +58,7 @@ permissions:
 
 jobs:
   build_wheels:
-    name: Build Wheel ${{ matrix.os }} py${{ matrix.pyver }} cu${{ matrix.cuda }}
+    name: Build Wheel ${{ matrix.os }} py${{ matrix.pyver }} th${{ inputs.torch_version }} cu${{ matrix.cuda }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -109,6 +109,7 @@ jobs:
           python-version: ${{ matrix.pyver }}
 
       - name: Free up disk space 1
+        if: ${{ runner.os == 'Linux' }}
         uses: ggml-org/free-disk-space@v1.3.1
         with:
           tool-cache: true
@@ -125,7 +126,7 @@ jobs:
           df -h
 
       - name: Set up swap space
-        if: runner.os == 'Linux'
+        if: ${{ runner.os == 'Linux' }}
         uses: pierotofy/set-swap-space@v1.0
         with:
           swap-size-gb: 8
