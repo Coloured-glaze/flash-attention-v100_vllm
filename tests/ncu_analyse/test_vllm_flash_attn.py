@@ -282,85 +282,47 @@ if __name__ == "__main__":
     q_shape_list = []
     kv_shape_list = []
 
-    # q_shape = (1, 40, 1, args.head_dim) 
-    # kv_shape = (1, 40, 512, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    # q_shape_list.append((1, 40, 1, args.head_dim) )
+    # kv_shape_list.append((1, 40, 512, args.head_dim) )
 
-    # q_shape = (1, 40, 1, args.head_dim) 
-    # kv_shape = (1, 40, 560, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    q_shape_list.append((1, 40, 1, args.head_dim))
+    kv_shape_list.append((1, 40, 65536, args.head_dim))
 
-    # q_shape = (1, 40, 1, args.head_dim) 
-    # kv_shape = (1, 40, 4096, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    q_shape_list.append((1, 40, 1, args.head_dim))
+    kv_shape_list.append((1, 40, 131072, args.head_dim))
 
-    # q_shape = (1, 40, 1, args.head_dim) 
-    # kv_shape = (1, 40, 8192, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    # q_shape_list.append((2, 20, 1024, args.head_dim))
+    # kv_shape_list.append((2, 20, 77, args.head_dim))
 
-    q_shape = (1, 40, 1, args.head_dim) 
-    kv_shape = (1, 40, 16384, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    q_shape_list.append((2, 10, 4096, args.head_dim))
+    kv_shape_list.append((2, 10, 77, args.head_dim))
 
-    q_shape = (1, 40, 1, args.head_dim) 
-    kv_shape = (1, 40, 32768, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    # q_shape_list.append((2, 10, 6144, args.head_dim))
+    # kv_shape_list.append((2, 10, 77, args.head_dim))
 
-    q_shape = (1, 40, 1, args.head_dim) 
-    kv_shape = (1, 40, 65536, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    q_shape_list.append((2, 16, 3952,  args.head_dim))
+    kv_shape_list.append((2, 16, 512,  args.head_dim))
 
-    q_shape = (2, 20, 1024, args.head_dim) 
-    kv_shape = (2, 20, 77, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    q_shape_list.append((2, 16, 3952,  args.head_dim))
+    kv_shape_list.append((2, 16, 3952,  args.head_dim))
 
-    q_shape = (2, 10, 4096, args.head_dim) 
-    kv_shape = (2, 10, 77, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    # q_shape_list.append((8, 10, 512, args.head_dim))
+    # kv_shape_list.append((8, 10, 512, args.head_dim))
 
-    q_shape = (2, 10, 6144, args.head_dim)
-    kv_shape = (2, 10, 77, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    # q_shape_list.append((8, 10, 1024, args.head_dim))
+    # kv_shape_list.append((8, 10, 1024, args.head_dim))
 
-    # q_shape = (8, 10, 512, args.head_dim) 
-    # kv_shape = (8, 10, 512, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    # q_shape_list.append((8, 10, 2048, args.head_dim))
+    # kv_shape_list.append((8, 10, 2048, args.head_dim))
 
-    q_shape = (8, 10, 1024, args.head_dim) 
-    kv_shape = (8, 10, 1024, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    # q_shape_list.append((2, 40, 4096, args.head_dim))
+    # kv_shape_list.append((2, 40, 4096, args.head_dim))
 
-    # q_shape = (8, 10, 2048, args.head_dim) 
-    # kv_shape = (8, 10, 2048, args.head_dim) 
-    # q_shape_list.append(q_shape)
-    # kv_shape_list.append(kv_shape)
+    q_shape_list.append((2, 40, 8192, args.head_dim))
+    kv_shape_list.append((2, 40, 8192, args.head_dim))
 
-    q_shape = (2, 40, 4096, args.head_dim) 
-    kv_shape = (2, 40, 4096, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
-
-    q_shape = (2, 40, 8192, args.head_dim) 
-    kv_shape = (2, 40, 8192, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
-
-    q_shape = (2, 40, 16384, args.head_dim) 
-    kv_shape = (2, 40, 16384, args.head_dim) 
-    q_shape_list.append(q_shape)
-    kv_shape_list.append(kv_shape)
+    # q_shape_list.append((2, 40, 16384, args.head_dim))
+    # kv_shape_list.append((2, 40, 16384, args.head_dim))
 
     for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
         if args.profile:
@@ -473,7 +435,7 @@ if __name__ == "__main__":
         ax2.set_axisbelow(True)
         ax2.grid(True, axis='y', linestyle='--', alpha=0.3)
         
-        save_plot = f'flops_{str(q_shape).replace(" ", "")}_{str(kv_shape).replace(" ", "")}.png'
+        save_plot = f'flops_{str(q_shape_list[-1]).replace(" ", "")}_{str(kv_shape_list[-1]).replace(" ", "")}.png'
         plt.tight_layout(); 
         plt.savefig(save_plot, dpi=150, bbox_inches='tight')
         print(f"Plot saved as {save_plot}")

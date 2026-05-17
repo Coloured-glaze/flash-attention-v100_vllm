@@ -140,11 +140,11 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
     if constexpr(Headdim <= 32) {
         run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_causal>(params, stream);
     } else if constexpr (Headdim <= 64) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream);
+        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream); // +79%
     } else if constexpr (Headdim <= 96) {
         run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream);
     } else if constexpr (Headdim <= 128) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream);
+        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 128, 4, 4>, Is_causal>(params, stream); // +50%
     } else if constexpr (Headdim <= 192) {
         if constexpr(!Is_causal) {
             run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4>, Is_causal>(params, stream);
@@ -222,15 +222,19 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
         if constexpr(!Is_causal) {
             if (params.seqlen_k == 77)  {
                 if (params.seqlen_q <= 1024) {
-                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
+                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_dropout, Is_causal>(params, stream); // speed up 13%
                 } else {
-                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
+                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 32, 8, 4>, Is_dropout, Is_causal>(params, stream); // 13
                 }
             } else {
                 if (params.seqlen_q <= 1024) {
                     run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_dropout, Is_causal>(params, stream);
+                // } else if (params.seqlen_q <= 4096) {
+                //     run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 32, 8, 4>, Is_dropout, Is_causal>(params, stream); // 17
+                } else if (params.seqlen_q <= 4096) {
+                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 8, 4>, Is_dropout, Is_causal>(params, stream); // 30
                 } else {
-                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 8, 4>, Is_dropout, Is_causal>(params, stream);
+                    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 256, 32, 8, 4>, Is_dropout, Is_causal>(params, stream); // 30
                 }
             }
         } else {

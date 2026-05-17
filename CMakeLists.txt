@@ -6,10 +6,37 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(FA2_ENABLED ON)
 
+# ============================================================================
+# 编译优化选项：减少模板实例化，大幅缩短编译时间
+# ============================================================================
+# Flash Attention 使用大量 C++ 模板和 BOOL_SWITCH 宏，每个 run_flash_fwd 调用会
+# 实例化 2^6 = 64 个不同的 CUDA kernel 变体。禁用不需要的特性可以显著减少编译时间。
+#
+# 使用方法（环境变量）：
+#   export FA_DISABLE_ALIBI=1      # 禁用 ALIBI 位置编码
+#   export FA_DISABLE_LOCAL=1      # 禁用 local/sliding window attention
+#   export FA_DISABLE_SOFTCAP=1    # 禁用 softcap 特性
+#   export FA_DISABLE_UNEVEN_K=1   # 禁用非对齐 K 维度优化
+#
+# 效果估算：
+#   - 禁用 1 个特性：编译时间减少约 50%
+#   - 禁用 2 个特性：编译时间减少约 75%
+#   - 禁用 3 个特性：编译时间减少约 87.5%
+#   - 禁用全部 4 个：编译时间减少约 93.75%
+#
+# 注意：禁用特性后，运行时调用该特性会报错或回退到慢路径
+# ============================================================================
+
 # Option to selectively build only specific head dimension kernels.
 # Set to a comma-separated list of head dimensions, e.g. "128" or "64,128".
 # If empty (default), all head dimension kernels will be built.
 set(FA_HDIM "" CACHE STRING "Comma-separated list of head dimensions to build (e.g. '128' or '64,128'). Empty = build all.")
+
+# Feature disable options - each reduces kernel template instantiations by ~50%
+set(FA_DISABLE_ALIBI OFF CACHE BOOL "Disable ALIBI attention bias support (reduces compile time ~50%)")
+set(FA_DISABLE_LOCAL OFF CACHE BOOL "Disable local/sliding window attention (reduces compile time ~50%)")
+set(FA_DISABLE_SOFTCAP OFF CACHE BOOL "Disable softcap attention scaling (reduces compile time ~50%)")
+set(FA_DISABLE_UNEVEN_K OFF CACHE BOOL "Disable non-aligned K dimension optimization (reduces compile time ~50%)")
 
 # CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
 set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
@@ -213,4 +240,22 @@ if (FA2_ENABLED)
             )
         endif ()
     endif ()
+
+    # Feature disable definitions - reduces template instantiations
+    if (FA_DISABLE_ALIBI)
+        target_compile_definitions(_vllm_fa2_C PRIVATE FLASHATTENTION_DISABLE_ALIBI)
+        message(STATUS "FA2: ALIBI support DISABLED")
+    endif()
+    if (FA_DISABLE_LOCAL)
+        target_compile_definitions(_vllm_fa2_C PRIVATE FLASHATTENTION_DISABLE_LOCAL)
+        message(STATUS "FA2: Local attention support DISABLED")
+    endif()
+    if (FA_DISABLE_SOFTCAP)
+        target_compile_definitions(_vllm_fa2_C PRIVATE FLASHATTENTION_DISABLE_SOFTCAP)
+        message(STATUS "FA2: Softcap support DISABLED")
+    endif()
+    if (FA_DISABLE_UNEVEN_K)
+        target_compile_definitions(_vllm_fa2_C PRIVATE FLASHATTENTION_DISABLE_UNEVEN_K)
+        message(STATUS "FA2: Uneven K optimization DISABLED")
+    endif()
 endif ()

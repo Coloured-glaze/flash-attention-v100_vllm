@@ -1,0 +1,215 @@
+name: Build Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        required: true
+        default: 'windows-2022'
+        description: "Target OS for build"
+        type: choice
+        options:
+          - "windows-latest"
+          - "windows-2025"
+          - "windows-2022"
+          - "ubuntu-latest"
+          - "ubuntu-22.04"
+      python:
+        required: true
+        type: string
+        default: '["3.10", "3.11", "3.12"]'
+        description: 'Python versions as JSON array, e.g. ["3.10", "3.11"]'
+      torch_version:
+        required: true
+        type: string
+        description: "Example: 2.8.0"
+        default: '2.8.0'
+      cuda_ver:
+        description: 'CUDA versions | 128'
+        required: true
+        default: '128'
+        type: choice
+        options:
+          - "124"
+          - "126"
+          - "128"
+          - "129"
+      branch:
+        required: false
+        type: string
+        default: ''
+        description: "Branch to build from (empty for default branch)"
+      set_env:
+        required: false
+        default: 'FA_HDIM=32,64,96,128,192,256,512 SHOW_PTX=1'
+        description: "Environment variables (space-separated KEY=VALUE pairs)"
+        type: string
+      release:
+        required: false
+        default: '0'
+        description: "Create release (1=yes, 0=no)"
+        type: choice
+        options:
+          - "0"
+          - "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build_wheels:
+    name: Build Wheel ${{ matrix.os }} py${{ matrix.pyver }} cu${{ matrix.cuda }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ['${{ inputs.os }}']
+        pyver: ${{ fromJson(inputs.python) }}
+        cuda: ["${{ inputs.cuda_ver }}"]
+
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CUDAVER: ${{ matrix.cuda }}
+      MAX_JOBS: 6
+
+    steps:
+      - name: Add MSBuild to PATH
+        if: runner.os == 'Windows'
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || github.ref }}
+
+      - name: Ensure CRLF line endings on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(
+            "csrc/flash_attn/src/static_switch.h",
+            "csrc/flash_attn/src/utils.h"
+          )
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              $content = [IO.File]::ReadAllText($f)
+              $content = $content -replace "`n", "`r`n"
+              $content = $content -replace "`r`r`n", "`r`n"
+              [IO.File]::WriteAllText($f, $content)
+              Write-Host "Converted $f to CRLF"
+            }
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.pyver }}
+
+      - name: Free up disk space 1
+        uses: ggml-org/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Free up disk space 2
+        if: ${{ runner.os == 'Linux' }}
+        # https://github.com/easimon/maximize-build-space/blob/master/action.yml
+        # https://github.com/easimon/maximize-build-space/tree/test-report
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet | 2 > /dev/null
+          sudo rm -rf /opt/ghc 2>&1 /dev/null
+          sudo rm -rf /opt/hostedtoolcache/CodeQL 2>&1 /dev/null
+          df -h
+
+      - name: Set up swap space
+        if: runner.os == 'Linux'
+        uses: pierotofy/set-swap-space@v1.0
+        with:
+          swap-size-gb: 8
+
+      - name: Set custom environment variables
+        if: ${{ inputs.set_env != '' }}
+        shell: bash
+        run: |
+          for pair in ${{ inputs.set_env }}; do
+            key="${pair%%=*}"
+            value="${pair#*=}"
+            echo "Setting $key=$value"
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      # from kingbri1/flash-attention build-wheels.yml
+      - name: Install CUDA ${{ matrix.cuda }}
+        uses: N-Storm/cuda-toolkit@v0.2.29
+        id: cuda-toolkit
+        with:
+          cuda: "${{ matrix.cuda }}"
+          use-github-cache: false
+
+      - name: Print CUDA version
+        shell: bash
+        run: |
+          nvcc --version
+          gcc --version 2>&1
+
+      - name: Setup proper pytorch dependency in "requirements.txt"
+        shell: bash
+        run: |
+          sed -i '/torch/d' ./requirements.txt
+          echo "torch == ${{ inputs.torch_version }}" >> ./requirements.txt
+          cat ./requirements.txt
+
+      - name: Install corresponding PyTorch
+        shell: bash
+        run: |
+          PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu${{ inputs.cuda_ver }}"
+          python -m pip install wheel -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
+          python -m pip install ninja cmake==3.30.0 numpy==1.26.2 setuptools build 
+      
+      - name: Build wheel
+        shell: bash -l {0}
+        run: |
+          python setup.py bdist_wheel -d dist/ $PLAT_ARG
+          python -m pip install dist/vllm_flash_attn*.whl
+          python -c "import vllm_flash_attn; print(vllm_flash_attn.__version__); dir(vllm_flash_attn)"
+
+      - name: List wheel distributions
+        shell: bash
+        run: ls -lh dist/*.whl
+
+      - name: Determine version
+        id: determine_version
+        shell: bash
+        run: |
+          whl=$(ls dist/vllm_flash_attn-*.whl | head -1)
+          name=$(basename "$whl")
+          version=$(echo "$name" | sed -n 's/vllm_flash_attn-\([^-]*\).*/\1/p')
+          echo "Version: $version"
+          echo "WHL_VERSION=$version" >> $GITHUB_ENV
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: wheel-py${{ matrix.pyver }}-cu${{ matrix.cuda }}-${{ matrix.os }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+      - name: Get Current Date
+        id: get-date
+        shell: bash
+        run: |
+          currentDate=$(date '+%F')
+          echo "BUILD_DATE=$currentDate" >> $GITHUB_ENV
+
+      - name: Create Release
+        if: ${{ inputs.release == '1' }}
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          tag_name: v${{ env.WHL_VERSION }}-py${{ matrix.pyver }}-cu${{ matrix.cuda }}-${{ matrix.os }}-${{ env.BUILD_DATE }}
+          files: dist/*.whl
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

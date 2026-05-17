@@ -26,15 +26,21 @@ logger = logging.getLogger(__name__)
 
 # Enivronment variables
 Envs = namedtuple("Envs", [
-    "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM", "SHOW_PTX", ])
+    "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM", "SHOW_PTX",
+    "FA_DISABLE_ALIBI", "FA_DISABLE_LOCAL", "FA_DISABLE_SOFTCAP", "FA_DISABLE_UNEVEN_K",
+])
 envs = Envs(
-    VERBOSE=bool(int(os.getenv("VERBOSE", "0"))),
+    VERBOSE=os.getenv("VERBOSE", False),
     MAX_JOBS=os.getenv("MAX_JOBS"),
     NVCC_THREADS=os.getenv("NVCC_THREADS"),
     VLLM_TARGET_DEVICE=os.getenv("VLLM_TARGET_DEVICE", "cuda"),
     CMAKE_BUILD_TYPE=os.getenv("CMAKE_BUILD_TYPE"),
-    FA_HDIM=os.getenv("FA_HDIM", ""), # 指定编译FA的头维度，快速测试内核，例如 export FA_HDIM=128 , export FA_HDIM=32,64 
-    SHOW_PTX=os.getenv("SHOW_PTX", None), # 显示 ptx 信息 ，例如 export SHOW_PTX=1
+    FA_HDIM=os.getenv("FA_HDIM", ""), # 指定编译FA的头维度，快速测试内核 export FA_HDIM=128 , export FA_HDIM=32,64 
+    SHOW_PTX=os.getenv("SHOW_PTX", None), # 显示 ptx 信息 ， export SHOW_PTX=1
+    FA_DISABLE_ALIBI=os.getenv("FA_DISABLE_ALIBI", False), # 禁用 ALIBI 特性，减少编译时间 ，export FA_DISABLE_ALIBI=1
+    FA_DISABLE_LOCAL=os.getenv("FA_DISABLE_LOCAL", False), # 禁用 local attention 特性，减少编译时间 ，export FA_DISABLE_LOCAL=1
+    FA_DISABLE_SOFTCAP=os.getenv("FA_DISABLE_SOFTCAP", False), # 禁用 softcap 特性，减少编译时间 ，export FA_DISABLE_SOFTCAP=1
+    FA_DISABLE_UNEVEN_K=os.getenv("FA_DISABLE_UNEVEN_K", False), # 禁用 uneven K 特性，减少编译时间 ，export FA_DISABLE_UNEVEN_K=1
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -154,6 +160,15 @@ class cmake_build_ext(build_ext):
 
         if envs.FA_HDIM:
             cmake_args += ['-DFA_HDIM={}'.format(envs.FA_HDIM)]
+
+        if envs.FA_DISABLE_ALIBI:
+            cmake_args += ['-DFA_DISABLE_ALIBI=ON']
+        if envs.FA_DISABLE_LOCAL:
+            cmake_args += ['-DFA_DISABLE_LOCAL=ON']
+        if envs.FA_DISABLE_SOFTCAP:
+            cmake_args += ['-DFA_DISABLE_SOFTCAP=ON']
+        if envs.FA_DISABLE_UNEVEN_K:
+            cmake_args += ['-DFA_DISABLE_UNEVEN_K=ON']
 
         verbose = envs.VERBOSE
         if verbose:

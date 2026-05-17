@@ -565,12 +565,12 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     constexpr int kBlockN = Kernel_traits::kBlockN;
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kWarpRows = Kernel_traits::kWarpRows;
-    constexpr int kBlockRowStride = kBlockM / kWarpRows;
+    // constexpr int kBlockRowStride = kBlockM / kWarpRows;
 
     const int mma_group_id = tidx / Kernel_traits::kMmaThreads;
     const int mma_thread_id = tidx % Kernel_traits::kMmaThreads;
     //const int warp_id_in_group = mma_thread_id / 32;
-    const int lane_id = tidx % 32;
+    // const int lane_id = tidx % 32;
 
     using GmemTiledCopyOStore = std::conditional_t<
         !Split,

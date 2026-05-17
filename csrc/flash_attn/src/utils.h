@@ -201,6 +201,7 @@ __forceinline__ __device__ auto convert_layout_acc_rowcol(Layout acc_layout) {
         make_layout(get<0, 0>(acc_layout), get<0, 2>(acc_layout), get<2>(acc_layout))
     );
 };
+// windows 需要使用 CRLF 行尾格式, 包括: csrc\flash_attn\src\static_switch.h , csrc\flash_attn\src\static_switch.h
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
