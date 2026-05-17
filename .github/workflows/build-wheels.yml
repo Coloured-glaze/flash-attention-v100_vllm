@@ -83,7 +83,7 @@ jobs:
       - name: check cl version
         if: runner.os == 'Windows'
         run: |
-          cl -version
+          cl 
 
       - name: Checkout repository
         uses: actions/checkout@v5
