@@ -177,7 +177,7 @@ jobs:
       - name: Setup proper pytorch dependency in "requirements.txt"
         shell: bash
         run: |
-          sed -i '/torch/d' ./requirements.txt
+          touch ./requirements.txt
           echo "torch == ${{ inputs.torch_version }}" >> ./requirements.txt
           cat ./requirements.txt
 
@@ -185,8 +185,8 @@ jobs:
         shell: bash
         run: |
           PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu${{ inputs.cuda_ver }}"
-          python -m pip install wheel -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
-          python -m pip install ninja cmake==3.30.0 numpy==1.26.2 setuptools build 
+          python -m pip install -no-cache-dir wheel -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
+          python -m pip install -no-cache-dir ninja cmake==3.30.0 numpy==1.26.2 setuptools build 
       
       - name: Build wheel
         shell: bash -l {0}
