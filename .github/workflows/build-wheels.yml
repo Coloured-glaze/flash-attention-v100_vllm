@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
     env:
       CUDAVER: ${{ matrix.cuda }}
-      MAX_JOBS: 6
+      MAX_JOBS: 4
 
     steps:
 
