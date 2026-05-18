@@ -92,16 +92,17 @@ jobs:
         shell: bash
         run: |
           python -c "
-          import re
           file = 'csrc/cutlass/include/cutlass/exmy_base.h'
           with open(file, 'r') as f:
               content = f.read()
-          content = re.sub(r'^(#if \(CUTLASS_CXX17_OR_LATER\))', r'// \1', content, flags=re.MULTILINE)
-          content = re.sub(r'^(  static_assert\(cutlass::platform::is_unsigned_v<Storage>.*\))', r'// \1', content, flags=re.MULTILINE)
-          content = re.sub(r'^(#endif)', r'// \1', content, flags=re.MULTILINE)
+          target = '#if (CUTLASS_CXX17_OR_LATER)\n  static_assert(cutlass::platform::is_unsigned_v<Storage>, \"Use an unsigned integer for StorageType\");\n#endif'
+          replacement = '// #if (CUTLASS_CXX17_OR_LATER)\n//   static_assert(cutlass::platform::is_unsigned_v<Storage>, \"Use an unsigned integer for StorageType\");\n// #endif'
+          if target not in content:
+              raise Exception(f'Target lines not found in {file}')
+          content = content.replace(target, replacement)
           with open(file, 'w') as f:
               f.write(content)
-          print('Modified lines:')
+          print('Successfully commented out the target lines')
           with open(file, 'r') as f:
               lines = f.readlines()
               for i, line in enumerate(lines, 1):
