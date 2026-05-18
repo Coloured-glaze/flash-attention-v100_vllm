@@ -154,7 +154,7 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
     } else if constexpr (Headdim <= 256) {
         run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4>, Is_causal>(params, stream);
     } else {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 32, 4, 4>, Is_causal>(params, stream);
+        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 16, 4, 2>, Is_causal>(params, stream);
     }
     
 }
@@ -267,7 +267,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim512(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 512;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 32, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 32, 16, 4, 2>, Is_dropout, Is_causal>(params, stream);
     });
 }
 }  // namespace FLASH_NAMESPACE
