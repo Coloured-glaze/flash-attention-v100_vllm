@@ -52,6 +52,7 @@ class FAConfigResult:
     smem_kv: int = 0
     smem_p: int = 0
     smem_total: int = 0
+    smem_splitkv: int = 0
     reg_estimate: int = 0
     blocks_per_sm: int = 0
     occupancy_pct: float = 0.0
@@ -84,11 +85,14 @@ def calculate_smem(config: FAConfig):
     q = config.block_m * config.head_dim * elem_size
     kv = config.block_n * config.head_dim * elem_size
     p = config.block_m * config.block_n * elem_size
-    return q, kv, p, q + kv + p
+    smem_nonsplit = q + kv + p
+    smem_splitkv = q + kv * 2 + p
+    return q, kv, p, smem_nonsplit, smem_splitkv
 
 def calculate_occupancy(config: FAConfig, spec: V100Spec, reg_estimate: int):
     n_threads = config.cta_warps * spec.threads_per_warp
-    _, _, _, smem_total = calculate_smem(config)
+    _, _, _, smem_nonsplit, smem_splitkv = calculate_smem(config)
+    smem_total = max(smem_nonsplit, smem_splitkv)
     
     if n_threads == 0:
         return 0, 0, 0, 0, 1, 0.0, 0
@@ -158,10 +162,11 @@ def analyze_config(config: FAConfig, spec: V100Spec = None) -> FAConfigResult:
             f"Try reducing kCtaWarps from {config.cta_warps} to {config.cta_warps // 2} or increasing kBlockN"
         )
     
-    q, kv, p, total = calculate_smem(config)
-    res.smem_q, res.smem_kv, res.smem_p, res.smem_total = q, kv, p, total
-    if total > spec.max_smem_per_block:
-        res.issues.append(f"SMEM {total/1024:.1f}KB exceeds 96KB")
+    q, kv, p, total, splitkv = calculate_smem(config)
+    res.smem_q, res.smem_kv, res.smem_p, res.smem_total, res.smem_splitkv = q, kv, p, total, splitkv
+    smem_actual = max(total, splitkv)
+    if smem_actual > spec.max_smem_per_block:
+        res.issues.append(f"SMEM {smem_actual/1024:.1f}KB exceeds 96KB")
 
     reg = estimate_registers(config, spec)
     res.reg_estimate = reg
@@ -265,7 +270,7 @@ def print_result(result: FAConfigResult, score=None, seqlen_q=None, batch_size=1
           f"kWarpCount={c.cta_warps}, kMmaLayoutWarps={c.mma_layout_warps}")
     print(f"  Derived: {result.n_threads} threads, kWarpRows={result.warp_rows}")
     print(f"  SMEM: Q={result.smem_q/1024:.1f}K KV={result.smem_kv/1024:.1f}K P={result.smem_p/1024:.1f}K "
-          f"Total={result.smem_total/1024:.1f}K")
+          f"NonSplit={result.smem_total/1024:.1f}K SplitKV={result.smem_splitkv/1024:.1f}K")
     print(f"  Registers/Block: {result.reg_estimate * result.n_threads}  "
           f"({result.reg_estimate * result.n_threads / result.spec.max_registers_per_sm * 100:.1f}% of 65536/SM)"
           f" Regs/thread: {result.reg_estimate} ")

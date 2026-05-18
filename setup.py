@@ -1,6 +1,6 @@
 # Copyright (c) 2023, Tri Dao.
 import logging
-import sys
+import sys, platform
 import os
 import re
 import ast
@@ -115,8 +115,10 @@ class cmake_build_ext(build_ext):
                 num_jobs = len(os.sched_getaffinity(0))
             except AttributeError:
                 num_jobs = os.cpu_count()
-        
-        logger.info(f"Using MAX_JOBS={num_jobs} as the number of jobs.")
+        if platform.system() == "Windows":
+            print(f"Using MAX_JOBS={num_jobs} as the number of jobs.")
+        else:
+            logger.info(f"Using MAX_JOBS={num_jobs} as the number of jobs.")
 
         nvcc_threads = None
         if _is_cuda() and get_nvcc_cuda_version() >= Version("11.2"):
@@ -127,9 +129,10 @@ class cmake_build_ext(build_ext):
             nvcc_threads = envs.NVCC_THREADS
             if nvcc_threads is not None:
                 nvcc_threads = int(nvcc_threads)
-                logger.info(
-                    "Using NVCC_THREADS=%d as the number of nvcc threads.",
-                    nvcc_threads)
+                if platform.system() == "Windows":
+                    print(f"Using NVCC_THREADS={nvcc_threads} as the number of nvcc threads.")
+                else:
+                    logger.info(f"Using NVCC_THREADS={nvcc_threads} as the number of nvcc threads.")
             else:
                 nvcc_threads = 1
             num_jobs = max(1, num_jobs // nvcc_threads)

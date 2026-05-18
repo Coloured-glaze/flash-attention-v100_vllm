@@ -259,11 +259,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim256(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 256;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        if (params.seqlen_k <= 256) {
-            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
-        } else {
-            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
-        }
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 
