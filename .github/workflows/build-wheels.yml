@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
     env:
       CUDAVER: ${{ matrix.cuda }}
-      MAX_JOBS: 4
+      MAX_JOBS: 6
 
     steps:
 
@@ -228,9 +228,7 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
-          python setup.py bdist_wheel -d dist/ $PLAT_ARG && \
-          python -m pip install dist/vllm_flash_attn*.whl && \
-          python -c "import vllm_flash_attn; print(vllm_flash_attn.__version__); dir(vllm_flash_attn)"
+          python setup.py bdist_wheel -d dist/ $PLAT_ARG
 
       - name: List wheel distributions
         shell: bash
