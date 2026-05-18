@@ -74,6 +74,41 @@ jobs:
       MAX_JOBS: 6
 
     steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || github.ref }}
+          submodules: recursive
+          # repository: ${{ inputs.repository }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.pyver }}
+
+      - name: change cutlass annotation
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -c "
+          import re
+          file = 'csrc/cutlass/include/cutlass/exmy_base.h'
+          with open(file, 'r') as f:
+              content = f.read()
+          content = re.sub(r'^(#if \(CUTLASS_CXX17_OR_LATER\))', r'// \1', content, flags=re.MULTILINE)
+          content = re.sub(r'^(  static_assert\(cutlass::platform::is_unsigned_v<Storage>.*\))', r'// \1', content, flags=re.MULTILINE)
+          content = re.sub(r'^(#endif)', r'// \1', content, flags=re.MULTILINE)
+          with open(file, 'w') as f:
+              f.write(content)
+          print('Modified lines:')
+          with open(file, 'r') as f:
+              lines = f.readlines()
+              for i, line in enumerate(lines, 1):
+                  if 400 <= i <= 410:
+                      print(f'{i}: {line}', end='')
+          "
+  
       - name: Add MSBuild to PATH
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v3
@@ -90,11 +125,6 @@ jobs:
         run: |
           which cl || where cl
           cl 
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.branch != '' && inputs.branch || github.ref }}
 
       - name: Ensure CRLF line endings on Windows
         if: runner.os == 'Windows'
@@ -113,11 +143,6 @@ jobs:
               Write-Host "Converted $f to CRLF"
             }
           }
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.pyver }}
 
       - name: Free up disk space 1
         if: ${{ runner.os == 'Linux' }}

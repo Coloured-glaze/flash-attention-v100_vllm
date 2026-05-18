@@ -116,7 +116,7 @@ class cmake_build_ext(build_ext):
             except AttributeError:
                 num_jobs = os.cpu_count()
         
-        logger.info("Using MAX_JOBS=%d as the number of jobs.", num_jobs)
+        logger.info(f"Using MAX_JOBS={num_jobs} as the number of jobs.")
 
         nvcc_threads = None
         if _is_cuda() and get_nvcc_cuda_version() >= Version("11.2"):
