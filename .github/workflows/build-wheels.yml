@@ -17,8 +17,8 @@ on:
       python:
         required: true
         type: string
-        default: '["3.10", "3.11", "3.12"]'
-        description: 'Python versions as JSON array, e.g. ["3.10", "3.11"]'
+        default: '["3.12"]'
+        description: 'Python versions as JSON array, e.g. ["3.10", "3.11", "3.12"]'
       torch_version:
         required: true
         type: string
@@ -262,7 +262,7 @@ jobs:
         if: ${{ inputs.release == '1' }}
         uses: softprops/action-gh-release@v2.6.2
         with:
-          tag_name: v${{ env.WHL_VERSION }}-py${{ matrix.pyver }}-th${{ inputs.torch_version }}-cu${{ matrix.cuda }}-${{ matrix.os }}-${{ env.BUILD_DATE }}
+          tag_name: v${{ env.WHL_VERSION }}-th${{ inputs.torch_version }}-cu${{ matrix.cuda }}-${{ matrix.os }}-${{ env.BUILD_DATE }}
           files: dist/*.whl
           generate_release_notes: true
         env:

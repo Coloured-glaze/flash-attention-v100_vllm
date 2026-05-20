@@ -298,7 +298,7 @@ def get_package_version():
         return str(public_version)
 
 
-PYTORCH_VERSION = "2.7.0"
+PYTORCH_VERSION = "2.7.1"
 MAIN_CUDA_VERSION = "12.8"
 
 
@@ -318,10 +318,10 @@ def get_nvcc_cuda_version() -> Version:
 
 def get_version() -> str:
     version = get_package_version()
+    torch_version_str = PYTORCH_VERSION.rsplit('.', 1)[0]
     cuda_version = str(get_nvcc_cuda_version())
-    if cuda_version != MAIN_CUDA_VERSION:
-        cuda_version_str = cuda_version.replace(".", "")[:3]
-        version += f"+cu{cuda_version_str}"
+    cuda_version_str = cuda_version.replace(".", "")[:3]
+    version += f"+torch{torch_version_str}.cu{cuda_version_str}"
     return version
 
 
@@ -352,6 +352,7 @@ setup(
     ],
     ext_modules=ext_modules,
     cmdclass={"build_ext": cmake_build_ext} if len(ext_modules) > 0 else {},
+    options={'bdist_wheel': {'py_limited_api': 'cp38'}},
     python_requires=">=3.8",
     install_requires=[f"torch >= {PYTORCH_VERSION}"],
     setup_requires=["psutil"],
