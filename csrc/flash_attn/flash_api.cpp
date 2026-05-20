@@ -245,7 +245,8 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split
     TORCH_CHECK(params.d == kHeadDim,
         "This build only supports headdim=", FA2_HDIM_EXACT, " but got headdim=", params.d);
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-        if (params.num_splits <= 1 && !force_split_kernel) {
+        // SM70: SplitKV path not supported for head_dim > 256 (SMEM and thread constraints)
+        if (params.num_splits <= 1 || kHeadDim > 256 && !force_split_kernel) {
             run_mha_fwd_<kHeadDim, Is_causal>(params, stream);
         } else {
             run_mha_fwd_splitkv_dispatch<kHeadDim, Is_causal>(params, stream);
@@ -254,7 +255,8 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split
 #else
     HEADDIM_SWITCH(params.d, [&] {
         BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-            if (params.num_splits <= 1 && !force_split_kernel) {  // If we don't set it num_splits == 0
+            // SM70: SplitKV path not supported for head_dim > 256 (SMEM and thread constraints)
+            if (params.num_splits <= 1 || kHeadDim > 256 && !force_split_kernel) {
                 run_mha_fwd_<kHeadDim, Is_causal>(params, stream);
             } else {
                 run_mha_fwd_splitkv_dispatch<kHeadDim, Is_causal>(params, stream);
@@ -313,8 +315,8 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, 
 
     // This needs to match with run_mha_fwd_splitkv_dispatch.
     const bool Is_causal = params.is_causal;
-    const int split_k_block_m = head_size <= 128 ? 64 : (head_size <= 192 ? (Is_causal ? 64 : 32) : 32);
-    const int block_n = head_size <= 32 ? 128 : (head_size <= 128 ? 64 : (head_size <= 192 ? (Is_causal ? 32 : 64) : 64));
+    const int split_k_block_m = head_size <= 96 ? 64 : (head_size <= 128 ? 32 : (head_size <= 192 ? (Is_causal ? 64 : 32) : (head_size <= 256 ? 32 : 16)));
+    const int block_n = head_size <= 32 ? 32 : (head_size <= 64 ? 64 : (head_size <= 96 ? 64 : (head_size <= 128 ? 128 : (head_size <= 192 ? (Is_causal ? 32 : 64) : (head_size <= 256 ? 64 : 32)))));
 
     const int num_n_blocks = (max_seqlen_k + block_n - 1) / block_n;
     const int num_m_blocks = (max_seqlen_q + split_k_block_m - 1) / split_k_block_m;
@@ -323,7 +325,10 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, 
     at::Tensor out_accum;
 
     if (p_dropout == 0.0f) {  // SplitKV is not implemented for dropout
-        if (num_splits < 1) {
+        // SM70: SplitKV path not supported for head_size > 256 (SMEM and thread constraints)
+        if (head_size > 256) {
+            params.num_splits = 1;
+        } else if (num_splits < 1) {
             params.num_splits = num_splits_heuristic(batch_size * num_heads * num_m_blocks, num_sm * 2, num_n_blocks, 128);
         }
         if (params.num_splits > 1) {

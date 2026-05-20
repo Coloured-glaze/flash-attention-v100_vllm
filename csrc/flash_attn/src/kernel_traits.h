@@ -179,10 +179,10 @@ struct Flash_fwd_kernel_traits  {
     static constexpr int kSmemPSize = size(SmemLayoutP{}) * sizeof(Element);
     // SplitKV uses separate K/V smem + sP (kSmemQSize + 2*kSmemKVSize + kSmemPSize).
     // Non-splitKV uses shared K/V smem + sP (kSmemQSize + kSmemKVSize + kSmemPSize).
-    // Allocate enough smem for both paths.
+    // For SM70, we only allocate NonSplit size since SplitKV path is not supported for large head dims.
     static constexpr int kSmemSizeSplitKV = kSmemQSize + kSmemKVSize * 2 + kSmemPSize;
     static constexpr int kSmemSizeNonSplit = kSmemQSize + kSmemKVSize + kSmemPSize;
-    static constexpr int kSmemSize = kSmemSizeSplitKV > kSmemSizeNonSplit ? kSmemSizeSplitKV : kSmemSizeNonSplit;
+    static constexpr int kSmemSize = kSmemSizeNonSplit;
     static_assert(kSmemSize <= 96 * 1024, "kSmemSize must fit within the 96KB shared memory limit on SM70");
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);

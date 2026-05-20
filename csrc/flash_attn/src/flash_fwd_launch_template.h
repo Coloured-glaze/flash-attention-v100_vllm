@@ -154,7 +154,11 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
     } else if constexpr (Headdim <= 256) {
         run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4>, Is_causal>(params, stream);
     } else {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 16, 4, 2>, Is_causal>(params, stream);
+        // Headdim > 256 (e.g., 512) is not supported for SplitKV path on SM70 due to:
+        // 1. SMEM constraints: SplitKV requires Q + 2*KV + P which exceeds 96KB
+        // 2. Thread count constraints: combine kernel requires >= 128 threads
+        // Use non-split path (num_splits=1) instead.
+        TORCH_CHECK(false, "SplitKV path not supported for head_dim > 256 on SM70. Use num_splits=1.");
     }
     
 }
@@ -267,7 +271,7 @@ template<bool Is_causal>
 void run_mha_fwd_hdim512(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 512;
     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 32, 16, 4, 2>, Is_dropout, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 32, 32, 4, 4>, Is_dropout, Is_causal>(params, stream);
     });
 }
 }  // namespace FLASH_NAMESPACE

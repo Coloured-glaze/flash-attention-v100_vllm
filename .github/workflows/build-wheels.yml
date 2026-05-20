@@ -228,7 +228,7 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
-          python setup.py bdist_wheel -d dist/ $PLAT_ARG
+          python setup.py bdist_wheel -d dist/
 
       - name: List wheel distributions
         shell: bash
