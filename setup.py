@@ -315,10 +315,12 @@ def get_nvcc_cuda_version() -> Version:
     nvcc_cuda_version = parse(output[release_idx].split(",")[0])
     return nvcc_cuda_version
 
+def get_torch_version() -> str:
+    return torch.__version__
 
 def get_version() -> str:
     version = get_package_version()
-    torch_version_str = PYTORCH_VERSION.rsplit('.', 1)[0]
+    torch_version_str = get_torch_version().rsplit('.', 1)[0]
     cuda_version = str(get_nvcc_cuda_version())
     cuda_version_str = cuda_version.replace(".", "")[:3]
     version += f"+torch{torch_version_str}.cu{cuda_version_str}"
