@@ -14,9 +14,16 @@
 
 // REGISTER_EXTENSION allows the shared library to be loaded and initialized
 // via python's import statement.
+// The import from Python will load the .so consisting of this file
+// in this extension, so that the TORCH_LIBRARY static initializers are run.
+// We use extern "C" to ensure C linkage for the Python module init function.
+// Setting module size to -1 (instead of 0) ensures module state is kept in
+// global variables and the module is properly initialized each time it's imported.
 #define REGISTER_EXTENSION(NAME)                                               \
+  extern "C" {                                                                 \
   PyMODINIT_FUNC CONCAT(PyInit_, NAME)() {                                     \
     static struct PyModuleDef module = {PyModuleDef_HEAD_INIT,                 \
-                                        STRINGIFY(NAME), nullptr, 0, nullptr}; \
+                                        STRINGIFY(NAME), nullptr, -1, nullptr}; \
     return PyModule_Create(&module);                                           \
+  }                                                                            \
   }

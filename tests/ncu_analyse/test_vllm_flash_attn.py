@@ -54,7 +54,6 @@ def torch_profile(
     block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False):
 
     causal, dtype, device = False, torch.float16, "cuda"
-    torch.manual_seed(42)
     print(f"torch: {torch.__version__}, cudnn: {torch.backends.cudnn.version()}, name: {torch.cuda.get_device_properties(0).name}")
 
     query = torch.randn(q_shape, dtype=dtype, device=device)
@@ -151,7 +150,6 @@ def flops(
         total_flops *= 0.5
 
     dtype, device = torch.float16, "cuda"
-    torch.manual_seed(42)
     query = torch.randn(q_shape, dtype=dtype, device=device)
     key = torch.randn(kv_shape, dtype=dtype, device=device)
     value = torch.randn(kv_shape, dtype=dtype, device=device)
@@ -273,8 +271,11 @@ if __name__ == "__main__":
     parser.add_argument("--head_dim", type=int, default=128, help="Head dimension")
     
     parser.add_argument("--plot", action="store_true", help="Plot q_shape, kv_shape, tflops and time charts when running flops test")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
     args = parser.parse_args()
+
+    torch.manual_seed(args.seed)
 
     # q_shape = (args.batch, args.n_heads, args.seq_len, args.head_dim) 
     # kv_shape = (args.batch, args.n_heads, args.seq_len, args.head_dim) 
@@ -285,17 +286,17 @@ if __name__ == "__main__":
     # q_shape_list.append((1, 40, 1, args.head_dim) )
     # kv_shape_list.append((1, 40, 512, args.head_dim) )
 
-    q_shape_list.append((1, 40, 1, args.head_dim))
-    kv_shape_list.append((1, 40, 65536, args.head_dim))
+    # q_shape_list.append((1, 40, 1, args.head_dim))
+    # kv_shape_list.append((1, 40, 65536, args.head_dim))
 
-    q_shape_list.append((1, 40, 1, args.head_dim))
-    kv_shape_list.append((1, 40, 131072, args.head_dim))
+    # q_shape_list.append((1, 40, 1, args.head_dim))
+    # kv_shape_list.append((1, 40, 131072, args.head_dim))
 
     # q_shape_list.append((2, 20, 1024, args.head_dim))
     # kv_shape_list.append((2, 20, 77, args.head_dim))
 
-    q_shape_list.append((2, 10, 4096, args.head_dim))
-    kv_shape_list.append((2, 10, 77, args.head_dim))
+    # q_shape_list.append((2, 10, 4096, args.head_dim))
+    # kv_shape_list.append((2, 10, 77, args.head_dim))
 
     # q_shape_list.append((2, 10, 6144, args.head_dim))
     # kv_shape_list.append((2, 10, 77, args.head_dim))
@@ -323,6 +324,15 @@ if __name__ == "__main__":
 
     # q_shape_list.append((2, 40, 16384, args.head_dim))
     # kv_shape_list.append((2, 40, 16384, args.head_dim))
+
+    # q_shape_list.append((2, 16, 5220, 128))
+    # kv_shape_list.append((2, 16, 512, 128))
+
+    # q_shape_list.append((2, 16, 5220, 128))
+    # kv_shape_list.append((2, 16, 5220, 128))
+
+    # q_shape_list.append((2, 16, 16384, 128))
+    # kv_shape_list.append((2, 16, 16384, 128))
 
     for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
         if args.profile:

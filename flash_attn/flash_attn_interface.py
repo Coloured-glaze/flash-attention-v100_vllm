@@ -8,7 +8,7 @@ from vllm_flash_attn.flash_attn_interface import (
 )
 
 flash_attn_cuda = _vllm_fa2_C
-flash_attn_gpu =_vllm_fa2_C
+flash_attn_gpu = _vllm_fa2_C
 
 # Copyright (c) 2023, Tri Dao.
 
