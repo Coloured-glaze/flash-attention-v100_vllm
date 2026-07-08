@@ -89,7 +89,7 @@ def _flash_attn_forward(
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = flash_attn_gpu.fwd(
+    out, softmax_lse, S_dmask, rng_state = torch.ops._vllm_fa2_C.fwd(
         q,
         k,
         v,
@@ -102,7 +102,7 @@ def _flash_attn_forward(
         window_size_right,
         softcap,
         return_softmax,
-        None,
+        None,  # Generator
     )
     return out, softmax_lse, S_dmask, rng_state
 
@@ -166,7 +166,7 @@ def _flash_attn_varlen_forward(
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = flash_attn_gpu.varlen_fwd(
+    out, softmax_lse, S_dmask, rng_state = torch.ops._vllm_fa2_C.varlen_fwd(
         q,
         k,
         v,
@@ -187,6 +187,7 @@ def _flash_attn_varlen_forward(
         window_size_right,
         softcap,
         return_softmax,
+        1,  # num_splits: 1 means no splitting
         None,
     )
     # if out.isnan().any() or softmax_lse.isnan().any():
@@ -267,7 +268,7 @@ def _flash_attn_backward(
         dk,
         dv,
         softmax_d,
-    ) = flash_attn_gpu.bwd(
+    ) = torch.ops._vllm_fa2_C.bwd(
         dout,
         q,
         k,
@@ -367,7 +368,7 @@ def _flash_attn_varlen_backward(
         dk,
         dv,
         softmax_d,
-    ) = flash_attn_gpu.varlen_bwd(
+    ) = torch.ops._vllm_fa2_C.varlen_bwd(
         dout,
         q,
         k,
@@ -1580,7 +1581,7 @@ def flash_attn_with_kvcache(
         cache_seqlens = maybe_contiguous(cache_seqlens)
     cache_batch_idx = maybe_contiguous(cache_batch_idx)
     block_table = maybe_contiguous(block_table)
-    out, softmax_lse = flash_attn_gpu.fwd_kvcache(
+    out, softmax_lse = torch.ops._vllm_fa2_C.fwd_kvcache(
         q,
         k_cache,
         v_cache,

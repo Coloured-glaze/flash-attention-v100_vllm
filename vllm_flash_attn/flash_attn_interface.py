@@ -400,7 +400,7 @@ def _flash_attn_backward(
         dk,
         dv,
         softmax_d,
-    ) = _vllm_fa2_C.bwd(
+    ) = torch.ops._vllm_fa2_C.bwd(
         dout,
         q,
         k,
