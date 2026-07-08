@@ -89,7 +89,8 @@ def _flash_attn_forward(
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = torch.ops._vllm_fa2_C.fwd(
+    # Only return 2 values since FLASHATTENTION_DISABLE_DROPOUT is defined
+    out, softmax_lse = torch.ops._vllm_fa2_C.fwd(
         q,
         k,
         v,
@@ -104,7 +105,8 @@ def _flash_attn_forward(
         return_softmax,
         None,  # Generator
     )
-    return out, softmax_lse, S_dmask, rng_state
+    # S_dmask and rng_state are None since dropout is disabled
+    return out, softmax_lse, None, None
 
 
 @_torch_register_fake_wrapper("flash_attn::_flash_attn_forward")
@@ -166,7 +168,8 @@ def _flash_attn_varlen_forward(
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = torch.ops._vllm_fa2_C.varlen_fwd(
+    # Only return 2 values since FLASHATTENTION_DISABLE_DROPOUT is defined
+    out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
         q,
         k,
         v,
@@ -190,9 +193,10 @@ def _flash_attn_varlen_forward(
         1,  # num_splits: 1 means no splitting
         None,
     )
+    # S_dmask and rng_state are None since dropout is disabled
     # if out.isnan().any() or softmax_lse.isnan().any():
     #     breakpoint()
-    return out, softmax_lse, S_dmask, rng_state
+    return out, softmax_lse, None, None
 
 
 @_torch_register_fake_wrapper("flash_attn::_flash_attn_varlen_forward")
