@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(vllm_flash_attn LANGUAGES CXX CUDA)
-set(CMAKE_CXX_STANDARD 17)
+
+# C++ standard can be overridden via -DCMAKE_CXX_STANDARD=20
+if (NOT CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(FA2_ENABLED ON)
@@ -118,7 +122,10 @@ string(REPLACE "-O2" "-O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_R
 # MSVC specific flags
 if (MSVC)
     string(REPLACE "/O2" "/O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_RELWITHDEBINFO}")
-    
+
+    # Add /EHsc for exception handling
+    add_compile_options(/EHsc)
+
     # Disable specific warnings:
     # C4101: unreferenced local variable
     # C177: variable was declared but never referenced (CUDA)

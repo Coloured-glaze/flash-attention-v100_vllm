@@ -52,6 +52,16 @@ on:
         options:
           - "0"
           - "1"
+      cpp_std:
+        required: false
+        default: ''
+        description: "C++ standard (empty for default)"
+        type: choice
+        options:
+          - ""
+          - "c++17"
+          - "c++20"
+          - "c++23"
 
 permissions:
   contents: write
@@ -193,6 +203,13 @@ jobs:
             echo "Setting $key=$value"
             echo "$key=$value" >> $GITHUB_ENV
           done
+
+      - name: Set C++ standard
+        if: ${{ inputs.cpp_std != '' }}
+        shell: bash
+        run: |
+          echo "Setting CPP_STD=${{ inputs.cpp_std }}"
+          echo "CPP_STD=${{ inputs.cpp_std }}" >> $GITHUB_ENV
 
       - name: Set CUDA version
         shell: python

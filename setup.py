@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Enivronment variables
 Envs = namedtuple("Envs", [
     "VERBOSE", "MAX_JOBS", "NVCC_THREADS", "VLLM_TARGET_DEVICE", "CMAKE_BUILD_TYPE", "FA_HDIM", "SHOW_PTX",
-    "FA_DISABLE_ALIBI", "FA_DISABLE_LOCAL", "FA_DISABLE_SOFTCAP", "FA_DISABLE_UNEVEN_K",
+    "FA_DISABLE_ALIBI", "FA_DISABLE_LOCAL", "FA_DISABLE_SOFTCAP", "FA_DISABLE_UNEVEN_K", "CPP_STD",
 ])
 envs = Envs(
     VERBOSE=os.getenv("VERBOSE", False),
@@ -41,6 +41,7 @@ envs = Envs(
     FA_DISABLE_LOCAL=os.getenv("FA_DISABLE_LOCAL", False), # 禁用 local attention 特性，减少编译时间 ，export FA_DISABLE_LOCAL=1
     FA_DISABLE_SOFTCAP=os.getenv("FA_DISABLE_SOFTCAP", False), # 禁用 softcap 特性，减少编译时间 ，export FA_DISABLE_SOFTCAP=1
     FA_DISABLE_UNEVEN_K=os.getenv("FA_DISABLE_UNEVEN_K", False), # 禁用 uneven K 特性，减少编译时间 ，export FA_DISABLE_UNEVEN_K=1
+    CPP_STD=os.getenv("CPP_STD", None), # 指定 C++ 标准，例如 c++17, c++20 ，export CPP_STD=c++17
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -164,6 +165,10 @@ class cmake_build_ext(build_ext):
         if envs.FA_HDIM:
             cmake_args += ['-DFA_HDIM={}'.format(envs.FA_HDIM)]
 
+        if envs.CPP_STD:
+            # 设置 C++ 标准，例如 c++17, c++20
+            cmake_args += ['-DCMAKE_CXX_STANDARD={}'.format(envs.CPP_STD.replace('c++', ''))]
+
         if envs.FA_DISABLE_ALIBI:
             cmake_args += ['-DFA_DISABLE_ALIBI=ON']
         if envs.FA_DISABLE_LOCAL:
@@ -223,7 +228,9 @@ class cmake_build_ext(build_ext):
                 "-lineinfo",
             ]
             if envs.SHOW_PTX is not None:
-                DCMAKE_CUDA_FLAGS += [ "--ptxas-options=-v", ]
+                DCMAKE_CUDA_FLAGS.append("--ptxas-options=-v")
+            if envs.CPP_STD is not None:
+                DCMAKE_CUDA_FLAGS.append(f"-std={envs.CPP_STD}")
             cmake_args += [
                 '-DCMAKE_JOB_POOLS:STRING=compile={}'.format(num_jobs),
                 '-DCMAKE_CUDA_FLAGS={}'.format(" ".join(DCMAKE_CUDA_FLAGS)),
