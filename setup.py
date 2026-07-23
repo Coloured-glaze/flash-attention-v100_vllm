@@ -229,8 +229,6 @@ class cmake_build_ext(build_ext):
             ]
             if envs.SHOW_PTX is not None:
                 DCMAKE_CUDA_FLAGS.append("--ptxas-options=-v")
-            if envs.CPP_STD is not None:
-                DCMAKE_CUDA_FLAGS.append(f"-std={envs.CPP_STD}")
             cmake_args += [
                 '-DCMAKE_JOB_POOLS:STRING=compile={}'.format(num_jobs),
                 '-DCMAKE_CUDA_FLAGS={}'.format(" ".join(DCMAKE_CUDA_FLAGS)),

@@ -126,6 +126,18 @@ if (MSVC)
     # Add /EHsc for exception handling
     add_compile_options(/EHsc)
 
+    # Set C++ standard for MSVC if specified
+    if (CMAKE_CXX_STANDARD EQUAL 20)
+        add_compile_options(/std:c++20)
+        message(STATUS "MSVC: Using C++20 standard")
+    elseif (CMAKE_CXX_STANDARD EQUAL 23)
+        add_compile_options(/std:c++23)
+        message(STATUS "MSVC: Using C++23 standard")
+    elseif (CMAKE_CXX_STANDARD EQUAL 17)
+        add_compile_options(/std:c++17)
+        message(STATUS "MSVC: Using C++17 standard")
+    endif()
+
     # Disable specific warnings:
     # C4101: unreferenced local variable
     # C177: variable was declared but never referenced (CUDA)
