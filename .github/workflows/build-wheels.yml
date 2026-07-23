@@ -178,7 +178,7 @@ jobs:
           echo "=== Memory Usage ==="
           # 判断是否为 Windows 环境 (Git Bash 的 OSTYPE 通常为 msys 或 cygwin)
           if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-            powershell -Command "$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB, 2); $free = [math]::Round($os.FreePhysicalMemory/1MB, 2); Write-Host ('Total: {0} GB | Free: {1} GB | Used: {2} GB' -f $total, $free, ($total-$free))"
+            powershell -Command '$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB, 2); $free = [math]::Round($os.FreePhysicalMemory/1MB, 2); Write-Host ("Total: {0} GB | Free: {1} GB | Used: {2} GB" -f $total, $free, ($total-$free))'
           else
             free -h
           fi
