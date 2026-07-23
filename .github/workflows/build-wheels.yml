@@ -168,6 +168,12 @@ jobs:
         with:
           swap-size-gb: 8
 
+      - name: Print disk space usage
+        shell: bash
+        run: |
+          df -h
+          free -h
+
       - name: Set custom environment variables
         if: ${{ inputs.set_env != '' }}
         shell: bash
