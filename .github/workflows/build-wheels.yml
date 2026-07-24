@@ -211,6 +211,37 @@ jobs:
           echo "Setting CPP_STD=${{ inputs.cpp_std }}"
           echo "CPP_STD=${{ inputs.cpp_std }}" >> $GITHUB_ENV
 
+      - name: Fix CUTLASS for CUDA 12.6+
+        if: ${{ matrix.cuda == '126' }}
+        # matrix.cuda == '126' || matrix.cuda == '128' || matrix.cuda == '129'
+        shell: python
+        run: |
+          import os
+
+          # Fix CUDA 12.6+ compatibility issue in cuda_host_adapter.hpp
+          file_path = 'csrc/cutlass/include/cutlass/cuda_host_adapter.hpp'
+          with open(file_path, 'r', encoding='utf-8') as f:
+              content = f.read()
+
+          # Remove CUTLASS_HOST_DEVICE from memsetDevice function
+          target = """  template<class FillValueType>
+          CUTLASS_HOST_DEVICE
+          Status memsetDevice("""
+
+          replacement = """  template<class FillValueType>
+          Status memsetDevice("""
+
+          if target in content:
+              content = content.replace(target, replacement)
+              with open(file_path, 'w', encoding='utf-8') as f:
+                  f.write(content)
+              print(f'Successfully fixed cuda_host_adapter.hpp for CUDA 12.6+')
+          else:
+              print('cuda_host_adapter.hpp already fixed or not found')
+              # Check if already fixed
+              if replacement in content:
+                  print('Function already has correct signature')
+
       - name: Set CUDA version
         shell: python
         run: |
