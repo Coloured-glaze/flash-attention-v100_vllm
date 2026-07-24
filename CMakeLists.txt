@@ -123,18 +123,18 @@ string(REPLACE "-O2" "-O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_R
 if (MSVC)
     string(REPLACE "/O2" "/O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_RELWITHDEBINFO}")
 
-    # Add /EHsc for exception handling
-    add_compile_options(/EHsc)
+    # Add /EHsc for exception handling (C++ only, not CUDA)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
 
-    # Set C++ standard for MSVC if specified
+    # Set C++ standard for MSVC if specified (C++ only, not CUDA)
     if (CMAKE_CXX_STANDARD EQUAL 20)
-        add_compile_options(/std:c++20)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++20")
         message(STATUS "MSVC: Using C++20 standard")
     elseif (CMAKE_CXX_STANDARD EQUAL 23)
-        add_compile_options(/std:c++23)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++23")
         message(STATUS "MSVC: Using C++23 standard")
     elseif (CMAKE_CXX_STANDARD EQUAL 17)
-        add_compile_options(/std:c++17)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
         message(STATUS "MSVC: Using C++17 standard")
     endif()
 
