@@ -224,12 +224,9 @@ jobs:
               content = f.read()
 
           # Remove CUTLASS_HOST_DEVICE from memsetDevice function
-          target = """  template<class FillValueType>
-          CUTLASS_HOST_DEVICE
-          Status memsetDevice("""
+          target = """  template<class FillValueType>\n  CUTLASS_HOST_DEVICE\n  Status memsetDevice("""
 
-          replacement = """  template<class FillValueType>
-          Status memsetDevice("""
+          replacement = """  template<class FillValueType>\n  Status memsetDevice("""
 
           if target in content:
               content = content.replace(target, replacement)
