@@ -83,10 +83,16 @@ message(DEBUG "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 #
 if (NOT Torch_FOUND)
     # conda install -c conda-forge kineto
-    
+
     # Suppress kineto library not found warning (kineto is optional for profiling)
     set(TORCH_KINETO_LIBRARY "" CACHE STRING "Kineto library path (optional)" FORCE)
     find_package(Torch REQUIRED)
+endif()
+
+# Force set C++ standard after torch is loaded to override torch's default
+if (CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD ${CMAKE_CXX_STANDARD} CACHE STRING "C++ standard" FORCE)
+    message(STATUS "Forcing C++ standard to ${CMAKE_CXX_STANDARD} after loading Torch")
 endif()
 
 set(VLLM_GPU_LANG "CUDA")
@@ -127,6 +133,10 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
 
     # Set C++ standard for MSVC if specified (C++ only, not CUDA)
+    # Remove any existing C++ standard flags first to avoid conflicts
+    string(REGEX REPLACE "/std:c\\+\\+[0-9]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REGEX REPLACE "-std:c\\+\\+[0-9]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
     if (CMAKE_CXX_STANDARD EQUAL 20)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++20")
         message(STATUS "MSVC: Using C++20 standard")
