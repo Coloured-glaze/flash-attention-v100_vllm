@@ -443,7 +443,13 @@ function (define_gpu_extension_target GPU_MOD_NAME)
       ${GPU_LANGUAGE}_ARCHITECTURES "${GPU_ARCHITECTURES}")
   endif()
 
-  set_property(TARGET ${GPU_MOD_NAME} PROPERTY CXX_STANDARD 17)
+  # Use the global C++ standard if set, otherwise default to 17
+  if (CMAKE_CXX_STANDARD)
+    set_property(TARGET ${GPU_MOD_NAME} PROPERTY CXX_STANDARD ${CMAKE_CXX_STANDARD})
+    message(STATUS "Setting ${GPU_MOD_NAME} C++ standard to ${CMAKE_CXX_STANDARD}")
+  else()
+    set_property(TARGET ${GPU_MOD_NAME} PROPERTY CXX_STANDARD 17)
+  endif()
 
   target_compile_options(${GPU_MOD_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:${GPU_LANGUAGE}>:${GPU_COMPILE_FLAGS}>)
