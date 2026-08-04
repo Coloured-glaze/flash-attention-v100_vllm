@@ -225,8 +225,7 @@ jobs:
           echo "CPP_STD=${{ inputs.cpp_std }}" >> $GITHUB_ENV
 
       - name: Fix CUTLASS for CUDA 12.6+
-        if: ${{ matrix.cuda == '126' }}
-        # matrix.cuda == '126' || matrix.cuda == '128' || matrix.cuda == '129'
+        if: ${{ inputs.cpp_std == 'c++20' || inputs.cpp_std == 'c++23' }}
         shell: python
         run: |
           import os
