@@ -22,12 +22,12 @@ on:
       torch_version:
         required: true
         type: string
-        description: "Example: 2.8.0"
+        description: "torch_version Example: 2.8.0"
         default: '2.8.0'
       torch_whl:
         required: true
         type: string
-        description: "owner/repo/tag"
+        description: "torch_whl owner/repo/tag"
         default: ''
       cuda_ver:
         description: 'CUDA versions | 128'
