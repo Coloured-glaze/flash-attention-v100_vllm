@@ -41,7 +41,7 @@ envs = Envs(
     FA_DISABLE_LOCAL=os.getenv("FA_DISABLE_LOCAL", False), # 禁用 local attention 特性，减少编译时间 ，export FA_DISABLE_LOCAL=1
     FA_DISABLE_SOFTCAP=os.getenv("FA_DISABLE_SOFTCAP", False), # 禁用 softcap 特性，减少编译时间 ，export FA_DISABLE_SOFTCAP=1
     FA_DISABLE_UNEVEN_K=os.getenv("FA_DISABLE_UNEVEN_K", False), # 禁用 uneven K 特性，减少编译时间 ，export FA_DISABLE_UNEVEN_K=1
-    CPP_STD=os.getenv("CPP_STD", None), # 指定 C++ 标准，例如 c++17, c++20 ，export CPP_STD=c++17
+    CPP_STD=os.getenv("CPP_STD", None), # 指定 C++ 标准，例如 c++17, c++20, export CPP_STD=c++20, torch2.13+ 要求c++20
 )
 
 with open("README.md", "r", encoding="utf-8") as fh:

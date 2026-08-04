@@ -3,12 +3,18 @@
 from typing import Optional, Tuple, List
 
 import torch
+import importlib
 
 # isort: off
 # We need to import the CUDA kernels after importing torch
 # Use relative import to support build-from-source installation in vLLM
+# Use lazy loading to avoid circular import
 
-from . import _vllm_fa2_C  # noqa: F401
+def _get_vllm_fa2_C():
+    """Lazy import of _vllm_fa2_C to avoid circular import."""
+    return importlib.import_module("._vllm_fa2_C", __package__)
+
+_vllm_fa2_C = None
 # isort: on
 
 DEFAULT_FA_VERSION = 2
@@ -177,6 +183,7 @@ def flash_attn_func(
         softmax_scale = q.shape[-1] ** (-0.5)
 
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    cuda_mod = _get_vllm_fa2_C()
     
     out, softmax_lse = torch.ops._vllm_fa2_C.fwd(
         q,
@@ -312,6 +319,7 @@ def flash_attn_varlen_func(
             raise NotImplementedError("FA2 does not support s_aux")
         if num_splits > 1:
             raise NotImplementedError("FA2 does not support num_splits > 1")
+        cuda_mod = _get_vllm_fa2_C()
         out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
             q, k, v,
             out,
@@ -395,6 +403,7 @@ def _flash_attn_backward(
 ) -> torch.Tensor:
     # dq, dk, dv are allocated by us so they should already be contiguous
     dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+    cuda_mod = _get_vllm_fa2_C()
     (
         dq,
         dk,
