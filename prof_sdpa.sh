@@ -3,9 +3,10 @@ cd ./tests/ncu_analyse/
 
 time=$(date '+%y%m%d_%H%M')
 git_commit=$(git rev-parse --short HEAD)
-file_name="prof_sdpa"
+prefix_name="prof_sdpa"
+output_file=${prefix_name}_${time}_${git_commit}.log
 
-python test_vllm_flash_attn.py --flops --profile --use_sdpa > ${file_name}_${time}_${git_commit}.txt 
+python test_vllm_flash_attn.py --flops --profile --use_sdpa > ${output_file} 
 
 # KERNEL_REGEX='.*fwd.*'
 KERNEL_REGEX='.*PyTorchMemEffAttention.*'
@@ -18,9 +19,9 @@ ncu -f --target-processes all --set full \
 && \
 ncu --import profile_out.ncu-rep --csv | head -n 200 > ${file_name}_${time}.csv \
 && \
-python compact_ncu.py ${file_name}_${time}.csv >> ${file_name}_${time}_${git_commit}.txt \
+python compact_ncu.py ${prefix_name}_${time}.csv >> ${output_file}\
 && \
-rm ${file_name}_${time}.csv \
+rm ${prefix_name}_${time}.csv \
 && \
 echo "profile analysis done. "
-echo "result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
+echo "result saved to ${PWD}/${output_file}"

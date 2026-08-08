@@ -1262,10 +1262,11 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 bool is_causal,
                 int window_size_left,
                 int window_size_right,
-                const float softcap,
-                bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
-                int num_splits
-                ) {
+        const float softcap,
+        bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
+        int num_splits,
+        bool v_cache_is_transposed
+        ) {
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
@@ -1333,7 +1334,12 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size_og);
     if (!paged_KV) {
         CHECK_SHAPE(kcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
-        CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
+        if (v_cache_is_transposed) {
+            // V cache is pre-transposed by the caller: (batch, nheads_k, head_size, seqlen_k)
+            CHECK_SHAPE(vcache, batch_size_c, num_heads_k, head_size_og, seqlen_k);
+        } else {
+            CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
+        }
     } else {
         CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_og);
         CHECK_SHAPE(vcache, num_blocks, page_block_size, num_heads_k, head_size_og);
@@ -1500,9 +1506,38 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    // V pre-transpose (inference / KV-cache optimization). When v_cache_is_transposed is
+    // true, the caller must pass v_cache already in (batch, nheads_k, head_size, seqlen_k)
+    // layout. The kernel reads V tiles directly into SmemLayoutV (kHeadDim, kBlockN),
+    // eliminating the SmemLayoutVtransposed composition indirection. No internal transpose
+    // is performed — the caller is responsible for transposing V when filling the cache.
+    if (v_cache_is_transposed) {
+        TORCH_CHECK(!paged_KV, "v_cache_is_transposed does not support paged KV cache yet");
+        TORCH_CHECK(!leftpad_k_.has_value(), "v_cache_is_transposed does not support leftpad_k yet");
+        TORCH_CHECK(!k_.has_value(), "v_cache_is_transposed does not support appending new K/V yet");
+        TORCH_CHECK(head_size == head_size_rounded,
+            "v_cache_is_transposed requires head_size (", head_size, ") to equal head_size_rounded (",
+            head_size_rounded, "), i.e. Is_even_K; use a head_size that is a multiple of ",
+            head_size <= 128 ? 32 : 64);
+        // The transposed V path loads full kBlockN-wide tiles (no per-column OOB clear),
+        // so seqlen_k must be a multiple of the largest SplitKV kBlockN (128) to avoid
+        // reading past the transposed V buffer on the last tile. See flash_fwd_kernel.h.
+        TORCH_CHECK(seqlen_k % 128 == 0,
+            "v_cache_is_transposed requires seqlen_k (", seqlen_k, ") to be a multiple of 128");
+        // V cache is already pre-transposed by the caller to (batch, nheads_k, head_size, seqlen_k).
+        // Use it directly — no internal allocation or transpose kernel launch.
+        params.v_is_transposed = true;
+        params.v_transposed_ptr = vcache_padded.data_ptr();
+        params.v_transposed_batch_stride = vcache_padded.stride(0);
+        params.v_transposed_head_stride = vcache_padded.stride(1);
+        params.v_transposed_row_stride = vcache_padded.stride(2);
+    }
+
     // Only split kernel supports appending to KV cache, or indexing to the cache with cache_batch_idx,
-    // or paged KV cache
-    run_mha_fwd(params, stream, /*force_split_kernel=*/k_.has_value() || cache_batch_idx_.has_value() || paged_KV);
+    // or paged KV cache. V pre-transpose also forces the split kernel (NonSplit path has a
+    // static_assert against V_is_transposed).
+    run_mha_fwd(params, stream, /*force_split_kernel=*/k_.has_value() || cache_batch_idx_.has_value() || paged_KV || params.v_is_transposed);
 
     if (head_size_og % 8 != 0) {
         out = out.index({"...", torch::indexing::Slice(torch::indexing::None, head_size_og)});

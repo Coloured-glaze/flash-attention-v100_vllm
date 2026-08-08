@@ -1485,6 +1485,7 @@ def flash_attn_with_kvcache(
     alibi_slopes=None,
     num_splits=0,
     return_softmax_lse=False,
+    v_cache_is_transposed=False,
 ):
     """
     If k and v are not None, k_cache and v_cache will be updated *inplace* with the new values from
@@ -1566,6 +1567,14 @@ def flash_attn_with_kvcache(
            to automatically determine the number of splits.
            Don't change this unless you know what you are doing.
         return_softmax_lse: bool. Whether to return the logsumexp of the attention scores.
+        v_cache_is_transposed: bool. If True, v_cache must already be stored in the
+           transposed layout (batch, nheads, headdim, seqlen) — the caller is responsible
+           for transposing V when filling the cache. The kernel reads V tiles directly
+           into SmemLayoutV without the SmemLayoutVtransposed indirection (SM70 inference
+           optimization). No internal transpose is performed. Only supported when there is
+           no paged KV cache, no leftpad, no new K/V appending, head_size is a multiple of
+           32 (or 64 for head_size > 128), and seqlen_k is a multiple of 128. Otherwise the
+           call raises. Defaults to False (legacy path, v_cache is (batch, seqlen, nheads, headdim)).
 
     Return:
         out: (batch_size, seqlen, nheads, headdim).
@@ -1606,5 +1615,6 @@ def flash_attn_with_kvcache(
         softcap,
         rotary_interleaved,
         num_splits,
+        v_cache_is_transposed,
     )
     return (out, softmax_lse) if return_softmax_lse else out

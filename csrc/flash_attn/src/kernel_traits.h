@@ -95,7 +95,7 @@ struct Copy_Traits<SM70_STG_GLOBAL_CG_128b> {
 
 using namespace cute;
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kCtaWarps_, int kMmaLayoutWarps_=4>
+template<int kHeadDim_, int kBlockM_, int kBlockN_, int kCtaWarps_, int kMmaLayoutWarps_=4, bool V_is_transposed_=false>
 struct Flash_fwd_kernel_traits  {
     using Element = cutlass::half_t;
     using ElementAccum = float;
@@ -103,6 +103,11 @@ struct Flash_fwd_kernel_traits  {
     using MMA_Atom_Arch = MMA_Atom<SM70_8x8x4_F32F16F16F32_TN>;
     using SmemCopyAtom = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
     using SmemCopyAtomTransposed = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
+
+    // When true, V is pre-transposed in gmem to (head_dim, seqlen_k) and loaded directly
+    // into SmemLayoutV (kHeadDim, kBlockN), eliminating the SmemLayoutVtransposed
+    // composition indirection. Requires SplitKV-style separated K/V smem.
+    static constexpr bool V_is_transposed = V_is_transposed_;
 
     // The number of threads.
     static constexpr int kCtaWarps = kCtaWarps_;
@@ -164,6 +169,38 @@ struct Flash_fwd_kernel_traits  {
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
+    // V pre-transpose path (V_is_transposed=true): V is stored in gmem as
+    // (head_dim, seqlen_k) and loaded directly into a (kHeadDim, kBlockN) smem tile.
+    //
+    // Strategy: provide BOTH the "direct" layouts (for the transposed path) and
+    // conditional aliases that resolve to the direct layout when V_is_transposed is
+    // true and to the existing transposed-view layout otherwise. The forward kernel
+    // then uses the unified aliases (SmemLayoutV, SmemLayoutVCopy, ...) so that the
+    // MMA-side and copy-side tensor types are consistent per-instantiation and only
+    // the gV construction (whose tile shape differs) needs a compile-time branch.
+    using SmemLayoutAtomV = decltype(
+        composition(Swizzle<kSwizzle, 3, 3>{},
+                    Layout<Shape<_8, Int<kBlockN>>,
+                           Stride<Int<kBlockN>, _1>>{}));
+    // Direct V layout: physical (kHeadDim, kBlockN) + swizzle, used when V is
+    // pre-transposed in gmem. The same tensor serves as both the gmem->smem copy
+    // destination and the MMA B-operand source (no transposed view needed).
+    using SmemLayoutVDirect = decltype(tile_to_shape(
+        SmemLayoutAtomV{},
+        Shape<Int<kHeadDim>, Int<kBlockN>>{}));
+    using SmemLayoutVDirectNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVDirect{}));
+    // V smem->reg copy atom for the pre-transpose path (same vectorizing copy as K).
+    using SmemCopyAtomV = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
+
+    // Unified V smem layouts selected by V_is_transposed:
+    //   - MMA B-operand source: SmemLayoutV (transposed view of KV when non-transposed,
+    //     direct layout when transposed).
+    //   - gmem->smem copy destination: SmemLayoutVCopy (physical SmemLayoutKV when
+    //     non-transposed, direct layout when transposed).
+    using SmemLayoutV = std::conditional_t<V_is_transposed, SmemLayoutVDirect, SmemLayoutVtransposed>;
+    using SmemLayoutVNoSwizzle = std::conditional_t<V_is_transposed, SmemLayoutVDirectNoSwizzle, SmemLayoutVtransposedNoSwizzle>;
+    using SmemLayoutVCopy = std::conditional_t<V_is_transposed, SmemLayoutVDirect, SmemLayoutKV>;
+
     using SmemLayoutAtomO = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<Int<8>, Int<kBlockKSmem>>,
@@ -179,11 +216,16 @@ struct Flash_fwd_kernel_traits  {
     static constexpr int kSmemPSize = size(SmemLayoutP{}) * sizeof(Element);
     // SplitKV uses separate K/V smem + sP (kSmemQSize + 2*kSmemKVSize + kSmemPSize).
     // Non-splitKV uses shared K/V smem + sP (kSmemQSize + kSmemKVSize + kSmemPSize).
-    // For SM70, we only allocate NonSplit size since SplitKV path is not supported for large head dims.
     static constexpr int kSmemSizeSplitKV = kSmemQSize + kSmemKVSize * 2 + kSmemPSize;
     static constexpr int kSmemSizeNonSplit = kSmemQSize + kSmemKVSize + kSmemPSize;
-    static constexpr int kSmemSize = kSmemSizeNonSplit;
+    // V pre-transpose path requires separated K/V smem (the V tile has a different
+    // swizzle pattern from K and cannot share the same physical region), so it uses
+    // the SplitKV size. The non-transposed path keeps the historical NonSplit size.
+    static constexpr int kSmemSize = V_is_transposed ? kSmemSizeSplitKV : kSmemSizeNonSplit;
     static_assert(kSmemSize <= 96 * 1024, "kSmemSize must fit within the 96KB shared memory limit on SM70");
+    // SplitKV kernel always uses separate K/V smem, so it needs kSmemSizeSplitKV
+    // regardless of V_is_transposed. Assert it fits the SM70 96KB limit too.
+    static_assert(kSmemSizeSplitKV <= 96 * 1024, "kSmemSizeSplitKV must fit within the 96KB shared memory limit on SM70");
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
@@ -204,6 +246,26 @@ struct Flash_fwd_kernel_traits  {
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
+
+    // V pre-transpose path: the transposed V tile in gmem is (kHeadDim, kBlockN) with
+    // kBlockN as the contiguous (fast) dimension. The QKV copy atom above is shaped for
+    // (kBlockN, kHeadDim) where kHeadDim (the fast dim) is covered by kGmemThreadsPerRow
+    // = kBlockKSmem/kGmemElemsPerLoad. For transposed V the fast dim is kBlockN, which
+    // differs from kBlockKSmem for several tile configs (e.g. dim96 kBlockKSmem=32 but
+    // kBlockN=64). We therefore define a dedicated V gmem atom whose threads-per-row is
+    // derived from kBlockN so the 128-bit loads cover the contiguous kBlockN direction.
+    static_assert(kBlockN % kGmemElemsPerLoad == 0, "kBlockN must be a multiple of kGmemElemsPerLoad for V transpose path");
+    static constexpr int kGmemThreadsPerRowV = kBlockN / kGmemElemsPerLoad;
+    static_assert(kNThreads % kGmemThreadsPerRowV == 0, "kNThreads must be a multiple of kGmemThreadsPerRowV");
+    using GmemLayoutAtomV = Layout<Shape <Int<kNThreads / kGmemThreadsPerRowV>, Int<kGmemThreadsPerRowV>>,
+                                   Stride<Int<kGmemThreadsPerRowV>, _1>>;
+    using GmemTiledCopyVDirect = decltype(
+        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+                        GmemLayoutAtomV{},
+                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read (128-bit)
+    // Unified V gmem copy: the direct atom when V is pre-transposed, else the QKV atom
+    // (preserving the historical non-transposed V load behavior).
+    using GmemTiledCopyV = std::conditional_t<V_is_transposed, GmemTiledCopyVDirect, GmemTiledCopyQKV>;
 
     // from how many rows does each thread have to fetch
     static constexpr int kGmemRowsPerThread = kBlockN / (kNThreads / kGmemThreadsPerRow);

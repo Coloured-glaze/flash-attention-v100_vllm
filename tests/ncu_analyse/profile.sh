@@ -1,21 +1,22 @@
 
+head_dim=${1:-128}
 time=$(date '+%y%m%d_%H%M')
 git_commit=$(git rev-parse --short HEAD)
-file_name="prof"
+output_file=prof_${time}_${git_commit}_${head_dim}.log
 
-echo "git commit: ${git_commit}" > ${file_name}_${time}_${git_commit}.txt
+echo "git commit: ${git_commit}" > ${output_file}
 
 export CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1
 
-echo "start benchmark at ${time}" \
+echo "start compute-sanitizer at ${time}" \
 && \
-compute-sanitizer --print-limit 1 python test_vllm_flash_attn.py --flops --flops_num 5 --fa \
+$CUDA_HOME/compute-sanitizer/compute-sanitizer --print-limit 1 python test_vllm_flash_attn.py --head_dim $head_dim --flops --flops_num 5 --fa \
 && \
 export CUDA_LAUNCH_BLOCKING=0 TORCH_USE_CUDA_DSA=0 \
 && \
-python test_vllm_flash_attn.py --flops --profile --fa --sdpa >> ${file_name}_${time}_${git_commit}.txt \
+python test_vllm_flash_attn.py --head_dim $head_dim --flops --profile --fa --sdpa >> ${output_file} \
 && \
-echo "benchmark done at ${time}"
+echo "compute-sanitizer done at ${time}"
 
 echo "start profile analysis"
 
@@ -26,15 +27,15 @@ ncu -f --target-processes all --set full \
     --kernel-name-base demangled \
     --kernel-name ::regex:"${KERNEL_REGEX}" \
     -o "profile_out" \
-    python test_vllm_flash_attn.py --flops --fa \
+    python test_vllm_flash_attn.py --head_dim $head_dim --flops --fa \
 && \
-ncu --import profile_out.ncu-rep --csv | head -n 200 > ${file_name}_${time}.csv \
+ncu --import profile_out.ncu-rep --csv | head -n 200 > ${output_file}.csv \
 && \
-python compact_ncu.py ${file_name}_${time}.csv >> ${file_name}_${time}_${git_commit}.txt \
+python compact_ncu.py ${output_file}.csv >> ${output_file} \
 && \
-rm ${file_name}_${time}.csv \
+rm ${output_file}.csv \
 && \
 echo "profile analysis done. "
-echo "result saved to ${PWD}/${file_name}_${time}_${git_commit}.txt"
+echo "result saved to ${PWD}/${output_file}"
 
 

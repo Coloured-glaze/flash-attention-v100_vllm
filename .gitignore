@@ -35,7 +35,10 @@ venv
 # compile-time generated file
 flash_attn_config.py
 analysis/
+.whl
 
+.workbuddy/
+csrc/tilelang/
 
 *.ncu-rep
 profile_out.csv
@@ -46,6 +49,7 @@ profile_out_*.txt
 *_tmp.txt
 *_temp.txt
 cuda_kernel_sample/*
+tests/ncu_analyse/*.log
 tests/ncu_analyse/prof_*.csv
 tests/ncu_analyse/prof_*.txt
 tests/ncu_analyse/tl_templates/*

@@ -140,6 +140,21 @@ struct Flash_fwd_params : public Qkv_params {
 
     bool unpadded_lse;  // For varlen paths: LSE is in [nheads, total_seqlen_q] format instead of [b, nheads, seqlen_q].
     bool seqlenq_ngroups_swapped;  // q has been transposed from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d).
+
+    // V pre-transpose path (inference / KV-cache only).
+    // When true, V is stored in gmem pre-transposed as (batch, nheads_k, head_dim, seqlen_k)
+    // and the forward kernel loads V tiles directly into SmemLayoutV (kHeadDim, kBlockN)
+    // without the SmemLayoutVtransposed composition indirection. The transposed V buffer
+    // is pointed to by v_transposed_ptr (v_ptr is ignored on this path).
+    bool v_is_transposed;
+    void * __restrict__ v_transposed_ptr;
+    // Strides for the transposed V buffer (batch, nheads_k, head_dim, seqlen_k), contiguous last:
+    //   v_transposed_batch_stride = nheads_k * head_dim * seqlen_k
+    //   v_transposed_head_stride  = head_dim * seqlen_k
+    //   v_transposed_row_stride   = seqlen_k  (stride between head_dim rows)
+    index_t v_transposed_batch_stride;
+    index_t v_transposed_head_stride;
+    index_t v_transposed_row_stride;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

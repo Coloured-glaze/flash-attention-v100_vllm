@@ -291,13 +291,6 @@ jobs:
           nvcc --version
           gcc --version 2>&1
 
-      - name: Setup proper pytorch dependency in "requirements.txt"
-        shell: bash
-        run: |
-          touch ./requirements.txt
-          echo "torch == ${{ inputs.torch_version }}" >> ./requirements.txt
-          cat ./requirements.txt
-
       - name: Install PyTorch from chunked wheel
         if: ${{ inputs.torch_whl != '' }}
         shell: bash
@@ -312,6 +305,10 @@ jobs:
         if: ${{ inputs.torch_whl == '' }}
         shell: bash
         run: |
+          touch ./requirements.txt
+          echo "torch == ${{ inputs.torch_version }}" >> ./requirements.txt
+          cat ./requirements.txt
+
           PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu${{ inputs.cuda_ver }}"
           python -m pip install --no-cache-dir -r requirements.txt --extra-index-url $PYTORCH_INDEX_URL
           python -m pip install --no-cache-dir ninja cmake==3.30 numpy==1.26.2 wheel setuptools build packaging 

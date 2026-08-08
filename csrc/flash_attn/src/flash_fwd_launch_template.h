@@ -76,7 +76,9 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 
 template<typename Kernel_traits, bool Is_causal>
 void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
-    constexpr size_t smem_size = Kernel_traits::kSmemSize;
+    // SplitKV kernel uses separate K/V smem (sV placed after sK, not aliasing it),
+    // so it always needs kSmemSizeSplitKV = Q + 2*KV + P, regardless of V_is_transposed.
+    constexpr size_t smem_size = Kernel_traits::kSmemSizeSplitKV;
     const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
     dim3 grid(num_m_block, params.num_splits > 1 ? params.num_splits : params.b, params.num_splits > 1 ? params.b * params.h : params.h);
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
@@ -137,30 +139,36 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
     // constexpr static int kBlockN = Headdim <= 32 ? 128 : (Headdim <= 128 ? 64 : (Headdim <= 192 ? (Is_causal ? 32 : 64) : (Headdim <= 256 ? 64 : 32)));
     // run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, 4>, Is_causal>(params, stream);
     
-    if constexpr(Headdim <= 32) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_causal>(params, stream);
-    } else if constexpr (Headdim <= 64) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream); // +79%
-    } else if constexpr (Headdim <= 96) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4>, Is_causal>(params, stream);
-    } else if constexpr (Headdim <= 128) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 128, 4, 4>, Is_causal>(params, stream); // +50%
-    } else if constexpr (Headdim <= 192) {
-        if constexpr(!Is_causal) {
-            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4>, Is_causal>(params, stream);
+    // V pre-transpose is only supported on the SplitKV path (the NonSplit path has a
+    // static_assert against it). Instantiate both V_is_transposed variants here and
+    // select at runtime via params.v_is_transposed. This doubles SplitKV compile time
+    // but lets the KV-cache / inference path opt into the transposed-V layout.
+    BOOL_SWITCH(params.v_is_transposed, V_is_transposed, [&] {
+        if constexpr(Headdim <= 32) {
+            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4, V_is_transposed>, Is_causal>(params, stream);
+        } else if constexpr (Headdim <= 64) {
+            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4, V_is_transposed>, Is_causal>(params, stream); // +79%
+        } else if constexpr (Headdim <= 96) {
+            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, 4, V_is_transposed>, Is_causal>(params, stream);
+        } else if constexpr (Headdim <= 128) {
+            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 128, 4, 4, V_is_transposed>, Is_causal>(params, stream); // +50%
+        } else if constexpr (Headdim <= 192) {
+            if constexpr(!Is_causal) {
+                run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4, V_is_transposed>, Is_causal>(params, stream);
+            } else {
+                run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4, V_is_transposed>, Is_causal>(params, stream);
+            }
+        } else if constexpr (Headdim <= 256) {
+            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4, V_is_transposed>, Is_causal>(params, stream);
         } else {
-            run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, 4>, Is_causal>(params, stream);
+            // Headdim > 256 (e.g., 512) is not supported for SplitKV path on SM70 due to:
+            // 1. SMEM constraints: SplitKV requires Q + 2*KV + P which exceeds 96KB
+            // 2. Thread count constraints: combine kernel requires >= 128 threads
+            // Use non-split path (num_splits=1) instead.
+            TORCH_CHECK(false, "SplitKV path not supported for head_dim > 256 on SM70. Use num_splits=1.");
         }
-    } else if constexpr (Headdim <= 256) {
-        run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, 32, 64, 4, 4>, Is_causal>(params, stream);
-    } else {
-        // Headdim > 256 (e.g., 512) is not supported for SplitKV path on SM70 due to:
-        // 1. SMEM constraints: SplitKV requires Q + 2*KV + P which exceeds 96KB
-        // 2. Thread count constraints: combine kernel requires >= 128 threads
-        // Use non-split path (num_splits=1) instead.
-        TORCH_CHECK(false, "SplitKV path not supported for head_dim > 256 on SM70. Use num_splits=1.");
-    }
-    
+    });
+
 }
 
 template<bool Is_causal>

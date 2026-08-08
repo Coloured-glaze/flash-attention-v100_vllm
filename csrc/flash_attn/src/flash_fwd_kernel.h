@@ -55,6 +55,12 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
+    // The NonSplit forward path does not support V pre-transpose (it shares K/V smem,
+    // which is incompatible with the direct SmemLayoutV). V pre-transpose is only
+    // supported on the SplitKV path (used for KV-cache / inference).
+    static_assert(!Kernel_traits::V_is_transposed,
+                  "NonSplit compute_attn_1rowblock does not support V_is_transposed; use SplitKV path.");
+
     using Element = typename Kernel_traits::Element;
     using ElementAccum = typename Kernel_traits::ElementAccum;
     using index_t = typename Kernel_traits::index_t;
@@ -647,21 +653,19 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                             make_stride(params.k_row_stride, params.k_head_stride, _1{}));
     Tensor gK = local_tile(mK(_, bidh / params.h_h_k_ratio, _), Shape<Int<kBlockN>, Int<kHeadDim>>{},
                            make_coord(_, 0));  // (kBlockN, kHeadDim, nblocksN)
-    Tensor mV = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.v_ptr)
-                                          + binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)),
-                            make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
-                            make_stride(params.v_row_stride, params.v_head_stride, _1{}));
-    Tensor gV = local_tile(mV(_, bidh / params.h_h_k_ratio, _), Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                           make_coord(_, 0));  // (kBlockN, kHeadDim, nblocksN)
-
     // Separate K/V smem for correct V-first ordering.
     // sQ | sK | sV | sP
+    // SmemLayoutVCopy / SmemLayoutV / SmemLayoutVNoSwizzle resolve (via std::conditional_t
+    // on Kernel_traits::V_is_transposed) to the direct (kHeadDim, kBlockN) layouts when V is
+    // pre-transposed, or to the legacy SmemLayoutKV / SmemLayoutVtransposed layouts otherwise.
+    // In both cases sV is placed after sK (SplitKV always separates K/V for V-first ordering),
+    // so the pointer arithmetic is identical.
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
-    Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutKV{});
-    Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
-    Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
+    Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutVCopy{});
+    Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutV{});
+    Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVNoSwizzle{});
     Tensor sQ_warp = local_tile(sQ, Shape<Int<kWarpRows>, Int<kHeadDim>>{},
                                 make_coord(mma_group_id, 0));
 
@@ -669,7 +673,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor sP_warp = local_tile(sP, Shape<Int<kWarpRows>, Int<kBlockN>>{},
                                 make_coord(mma_group_id, 0));
 
-    // Use GmemTiledCopyQKV (same as non-splitkv) for reliable K/V access via tensor slicing
+    // Q/K gmem copy (unchanged from non-splitkv).
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
 
@@ -677,8 +681,51 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
     Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K, nblocksN)
-    Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
+
+    // V gmem copy + tile. The V tile shape differs between the pre-transpose path
+    // (kHeadDim, kBlockN) and the legacy path (kBlockN, kHeadDim), so gV / tVgV / tVsV
+    // and the V identity/predicate tensors have instantiation-dependent types. We build
+    // them in a constexpr-selected lambda so the rest of the kernel (loads, GEMM) can use
+    // them uniformly. GmemTiledCopyV resolves to the direct V atom when V_is_transposed
+    // and to GmemTiledCopyQKV otherwise.
+    typename Kernel_traits::GmemTiledCopyV gmem_tiled_copy_V;
+    auto gmem_thr_copy_V = gmem_tiled_copy_V.get_thread_slice(tidx);
+    auto v_gmem_setup = [&]() {
+        if constexpr (Kernel_traits::V_is_transposed) {
+            // V_transposed physical layout: (batch, nheads_k, head_dim, seqlen_k), contiguous last.
+            // Index per head as (head_dim, seqlen_k) via mV shape (d, h_k, actual_seqlen_k).
+            Tensor mV = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.v_transposed_ptr)
+                                                  + bidb_cache * params.v_transposed_batch_stride
+                                                  + int64_t(binfo.leftpad_k)),
+                                    make_shape(params.d, params.h_k, binfo.actual_seqlen_k),
+                                    make_stride(params.v_transposed_row_stride, params.v_transposed_head_stride, _1{}));
+            Tensor gV = local_tile(mV(_, bidh / params.h_h_k_ratio, _),
+                                   Shape<Int<kHeadDim>, Int<kBlockN>>{}, make_coord(0, _));
+            Tensor tVgV = gmem_thr_copy_V.partition_S(gV);
+            Tensor tVsV = gmem_thr_copy_V.partition_D(sV);
+            Tensor cV = make_identity_tensor(make_shape(size<0>(sV), size<1>(sV)));
+            Tensor tVcV = gmem_thr_copy_V.partition_S(cV);
+            Tensor tVpV = make_tensor<bool>(make_shape(size<2>(tVsV)));
+            return make_tuple(tVgV, tVsV, tVcV, tVpV);
+        } else {
+            Tensor mV = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.v_ptr)
+                                                  + binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)),
+                                    make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
+                                    make_stride(params.v_row_stride, params.v_head_stride, _1{}));
+            Tensor gV = local_tile(mV(_, bidh / params.h_h_k_ratio, _),
+                                   Shape<Int<kBlockN>, Int<kHeadDim>>{}, make_coord(_, 0));
+            Tensor tVgV = gmem_thr_copy_V.partition_S(gV);
+            Tensor tVsV = gmem_thr_copy_V.partition_D(sV);
+            Tensor cV = make_identity_tensor(make_shape(size<0>(sV), size<1>(sV)));
+            Tensor tVcV = gmem_thr_copy_V.partition_S(cV);
+            Tensor tVpV = make_tensor<bool>(make_shape(size<2>(tVsV)));
+            return make_tuple(tVgV, tVsV, tVcV, tVpV);
+        }
+    }();
+    auto& tVgV = get<0>(v_gmem_setup);
+    auto& tVsV = get<1>(v_gmem_setup);
+    auto& tVcV = get<2>(v_gmem_setup);
+    auto& tVpV = get<3>(v_gmem_setup);
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(mma_thread_id);
@@ -734,6 +781,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
         #pragma unroll
         for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
+        // V predicate (V-specific identity). For the pre-transpose path this is only
+        // reached when Is_even_K is false, which is excluded for that path (guarded in
+        // the API), so this loop is effectively non-transposed-only.
+        #pragma unroll
+        for (int k = 0; k < size(tVpV); ++k) { tVpV(k) = get<1>(tVcV(0, 0, k)) < params.d; }
     }
 
     // Prologue: Load Q
@@ -763,11 +815,21 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
         // Load V to sV (separate smem from sK, so no race with QK GEMM which reads sK)
         if (masking_step > 0) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_V, tVgV(_, _, _, n_block), tVsV, tVcV, tVpV);
         } else {
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
-            );
+            if constexpr (Kernel_traits::V_is_transposed) {
+                // For pre-transposed V, Clear_OOB_MN would clear the kHeadDim (1st) tile
+                // dimension instead of the seqlen_k (2nd) dimension. Instead load the full
+                // tile: the transposed V buffer holds finite data across [0, seqlen_k) (the
+                // API guards seqlen_k % kBlockN == 0 so the last tile does not overread the
+                // buffer), so OOB seqlen_k columns are finite and get nullified by P=0 (the
+                // softmax mask sets OOB columns to -inf when !Is_even_MN).
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_V, tVgV(_, _, _, n_block), tVsV, tVcV, tVpV);
+            } else {
+                FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
+                    gmem_tiled_copy_V, tVgV(_, _, _, n_block), tVsV, tVcV, tVpV, binfo.actual_seqlen_k - n_block * kBlockN
+                );
+            }
         }
 
         // Q*K GEMM reads sK (separate from sV)
@@ -829,7 +891,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         __syncthreads();
 
         // Load V to sV
-        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_V, tVgV(_, _, _, n_block), tVsV, tVcV, tVpV);
 
         // Q*K GEMM reads sK
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false>(

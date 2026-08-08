@@ -58,7 +58,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 int window_size_right,
                 const float softcap,
                 bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
-                int num_splits);
+                int num_splits,
+                bool v_cache_is_transposed);
 
                 
 std::vector<at::Tensor>
@@ -96,7 +97,8 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
     ops.def("fwd_kvcache(Tensor! q, Tensor kcache, Tensor vcache, Tensor? k, Tensor? v, Tensor? seqlens_k, "
             "Tensor? rotary_cos, Tensor? rotary_sin, Tensor? cache_batch_idx, Tensor? leftpad_k, Tensor? block_table, "
             "Tensor? alibi_slopes, Tensor!? out, float softmax_scale, bool is_causal, int window_size_left, "
-            "int window_size_right, float softcap, bool is_rotary_interleaved, int num_splits) -> Tensor[]");
+            "int window_size_right, float softcap, bool is_rotary_interleaved, int num_splits, "
+            "bool v_cache_is_transposed) -> Tensor[]");
     ops.impl("fwd_kvcache", torch::kCUDA, make_pytorch_shim(&mha_fwd_kvcache));
 }
 
