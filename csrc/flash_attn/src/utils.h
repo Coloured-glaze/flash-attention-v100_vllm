@@ -261,7 +261,12 @@ __forceinline__ __device__ auto convert_layout_C_to_A(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
+/*
+Duration	            7.13 ms ->	8.06 ms	🔴 +13.0% 
+TFlops	                55.96 ->  48.69	🔴 -13.0%
+Executed Instructions	1,253M	->  1,564M	🔴 +24.8%
+shared store bank conflict	33.50% (2.4-way)  ->  0% 🟢 
+*/
 template<typename Kernel_traits, typename ThrMma, typename TensorSP, typename TensorRP, typename ThrCopyA>
 __forceinline__ __device__ auto convert_layout_C_to_A_v2(
     const ThrMma& thr_mma,

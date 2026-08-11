@@ -55,6 +55,10 @@ tests/ncu_analyse/prof_*.txt
 tests/ncu_analyse/tl_templates/*
 tests/ncu_analyse/tile_flash*.cu
 tests/ncu_analyse/tile_fa_dim*
+tests/ncu_analyse/flops_*.png
 dim*_*.txt
 autotuner*
 sm70_fa_config*
+
+csrc/flash_attn/src/v_transpose_kernel.cuh
+csrc/flash_attn/src/v_transpose_sm70.cu

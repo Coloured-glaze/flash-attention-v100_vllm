@@ -81,7 +81,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const int mma_group_id = tidx / Kernel_traits::kMmaThreads;
     const int mma_thread_id = tidx % Kernel_traits::kMmaThreads;
     //const int warp_id_in_group = mma_thread_id / 32;
-    //const int lane_id = tidx % 32;
+    // const int lane_id = tidx % 32;
 
     auto seed_offset = at::cuda::philox::unpack(params.philox_args);
     FLASH_NAMESPACE::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
@@ -358,7 +358,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_s, n_block * kBlockN, m_block * kBlockM + mma_group_id * kWarpRows, 0
         );
 
-        __syncthreads();
+        // __syncthreads(); // remove 
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
@@ -391,6 +391,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             const int row_global = mma_group_id * kWarpRows + row_local;
             sP(row_global, col) = rP(i);
         }
+        // B1: vectorized sP writeback via C->A layout conversion + CUTE copy atom
+        // auto tOrP_conv = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
+        //     thr_mma, sP_warp, rP, smem_thr_copy_Q, lane_id);
+        // auto tOrP_write = smem_thr_copy_Q.retile_D(tOrP_conv);
+        // cute::copy(smem_tiled_copy_Q, tOrP_write, tSsP);
         __syncthreads();
 
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
@@ -469,6 +474,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             const int row_global = mma_group_id * kWarpRows + row_local;
             sP(row_global, col) = rP(i);
         }
+        // B1: vectorized sP writeback via C->A layout conversion + CUTE copy atom
+        // auto tOrP_conv = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
+        //     thr_mma, sP_warp, rP, smem_thr_copy_Q, lane_id);
+        // auto tOrP_write = smem_thr_copy_Q.retile_D(tOrP_conv);
+        // cute::copy(smem_tiled_copy_Q, tOrP_write, tSsP);
         __syncthreads();
 
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
@@ -869,6 +879,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             const int row_global = mma_group_id * kWarpRows + row_local;
             sP(row_global, col) = rP(i);
         }
+        // B1: vectorized sP writeback via C->A layout conversion + CUTE copy atom
+        // auto tOrP_conv = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
+        //     thr_mma, sP_warp, rP, smem_thr_copy_Q, lane_id);
+        // auto tOrP_write = smem_thr_copy_Q.retile_D(tOrP_conv);
+        // cute::copy(smem_tiled_copy_Q, tOrP_write, tSsP);
         __syncthreads();
 
         // PV GEMM reads sV and sP
@@ -926,6 +941,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             const int row_global = mma_group_id * kWarpRows + row_local;
             sP(row_global, col) = rP(i);
         }
+        // B1: vectorized sP writeback via C->A layout conversion + CUTE copy atom
+        // auto tOrP_conv = FLASH_NAMESPACE::convert_layout_C_to_A_v2<Kernel_traits>(
+        //     thr_mma, sP_warp, rP, smem_thr_copy_Q, lane_id);
+        // auto tOrP_write = smem_thr_copy_Q.retile_D(tOrP_conv);
+        // cute::copy(smem_tiled_copy_Q, tOrP_write, tSsP);
         __syncthreads();
 
         FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/false>(
