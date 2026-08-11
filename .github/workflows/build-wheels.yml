@@ -27,7 +27,7 @@ on:
       torch_whl:
         required: true
         type: string
-        description: "torch_whl owner/repo/tag"
+        description: "torch_whl | owner/repo/tag OR GitHub release URL (e.g. https://github.com/owner/repo/releases/tag/v1.0 or https://github.com/owner/repo/releases/latest)"
         default: ''
       cuda_ver:
         description: 'CUDA versions | 129'
@@ -281,10 +281,16 @@ jobs:
         if: ${{ inputs.torch_whl != '' }}
         shell: bash
         run: |
-          IFS='/' read -r owner repo tag <<< "${{ inputs.torch_whl }}"
-          pwd && ls 
-          echo "Downloading torch from $owner/$repo tag $tag"
-          python tools/get_chunk.py --repo "$owner/$repo" --tag "$tag" --install --cleanup -o ./torch_whl
+          TORCH_WHL="${{ inputs.torch_whl }}"
+          pwd && ls
+          if [[ "$TORCH_WHL" == https://github.com/* ]]; then
+            echo "Detected GitHub release URL format"
+            python tools/get_chunk.py "$TORCH_WHL" --install --cleanup -o ./torch_whl
+          else
+            IFS='/' read -r owner repo tag <<< "$TORCH_WHL"
+            echo "Downloading torch from $owner/$repo tag $tag"
+            python tools/get_chunk.py --repo "$owner/$repo" --tag "$tag" --install --cleanup -o ./torch_whl
+          fi
           python -m pip install --no-cache-dir ninja cmake==3.30 numpy==1.26.2 wheel setuptools build packaging
 
       - name: Install corresponding PyTorch

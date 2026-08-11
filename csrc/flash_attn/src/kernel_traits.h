@@ -225,7 +225,11 @@ struct Flash_fwd_kernel_traits  {
     static_assert(kSmemSize <= 96 * 1024, "kSmemSize must fit within the 96KB shared memory limit on SM70");
     // SplitKV kernel always uses separate K/V smem, so it needs kSmemSizeSplitKV
     // regardless of V_is_transposed. Assert it fits the SM70 96KB limit too.
-    static_assert(kSmemSizeSplitKV <= 96 * 1024, "kSmemSizeSplitKV must fit within the 96KB shared memory limit on SM70");
+    // Only enforced when SplitKV is actually supported (kHeadDim <= 256); for larger
+    // head dims the SplitKV path is rejected at runtime in run_mha_fwd_splitkv_dispatch,
+    // so kSmemSizeSplitKV is never used and must not be constrained here.
+    static_assert(kHeadDim > 256 || kSmemSizeSplitKV <= 96 * 1024,
+                  "kSmemSizeSplitKV must fit within the 96KB shared memory limit on SM70");
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");

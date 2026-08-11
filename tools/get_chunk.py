@@ -52,18 +52,43 @@ from urllib.request import Request, urlopen
 CHUNK_RE = re.compile(r"^(.+)\.part(\d+)$")
 
 
+def resolve_latest_tag(repo: str, token=None) -> str:
+    """Resolve the tag of the latest release for a repo via GitHub API."""
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    data = gh_get(url, token=token)
+    return data["tag_name"]
+
+
 def parse_release_url(url: str):
-    """https://github.com/OWNER/REPO/releases/tag/TAG -> (OWNER/REPO, TAG)."""
+    """Parse a GitHub release URL into (OWNER/REPO, TAG).
+
+    Supports:
+      https://github.com/OWNER/REPO/releases/tag/TAG
+      https://github.com/OWNER/REPO/releases/latest
+    """
+    url = url.rstrip("/")
+
+    # /releases/latest  -> tag is None (to be resolved later)
+    m = re.match(
+        r"https?://github\.com/([^/]+)/([^/]+)/releases/latest",
+        url,
+    )
+    if m:
+        return f"{m.group(1)}/{m.group(2)}", None
+
+    # /releases/tag/TAG
     m = re.match(
         r"https?://github\.com/([^/]+)/([^/]+)/releases/tag/(.+)",
-        url.rstrip("/"),
+        url,
     )
-    if not m:
-        raise ValueError(
-            f"Unrecognized release URL: {url}\n"
-            f"Expected: https://github.com/OWNER/REPO/releases/tag/TAG"
-        )
-    return f"{m.group(1)}/{m.group(2)}", m.group(3)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}", m.group(3)
+
+    raise ValueError(
+        f"Unrecognized release URL: {url}\n"
+        f"Expected: https://github.com/OWNER/REPO/releases/tag/TAG\n"
+        f"      or: https://github.com/OWNER/REPO/releases/latest"
+    )
 
 
 def gh_get(url: str, token=None):
@@ -205,6 +230,12 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve latest release tag if needed
+    if tag is None:
+        print(f"Resolving latest release tag for {repo}...")
+        tag = resolve_latest_tag(repo, token=args.token)
+        print(f"Resolved tag: {tag}")
+
     print(f"Repo: {repo}")
     print(f"Tag:  {tag}")
     print(f"Out:  {out_dir.resolve()}")
@@ -276,3 +307,6 @@ if __name__ == "__main__":
     except (HTTPError, URLError) as e:
         print(f"Network error: {e}", file=sys.stderr)
         sys.exit(2)
+    except (ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(3)
