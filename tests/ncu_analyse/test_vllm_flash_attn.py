@@ -35,8 +35,7 @@ def ref_program(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mas
 
 def ref_program_fa(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, causal=False):
     return flash_attn_func(
-        query.permute(0,2,1,3), key.permute(0,2,1,3), value.permute(0,2,1,3),
-        causal=causal
+        query.permute(0,2,1,3), key.permute(0,2,1,3), value.permute(0,2,1,3), causal=causal, 
         ).permute(0,2,1,3)
 
 def ref_program_kvcache(
@@ -56,12 +55,10 @@ def ref_program_kvcache(
     # Allocate KV cache.
     # K cache is always (B,S,H,D). V cache is (B,H,D,S) when v_cache_is_transposed=True.
     max_seqlen_k = k.size(1)
-    k_cache = torch.zeros(q.size(0), max_seqlen_k, k.size(2), k.size(3),
-                          dtype=k.dtype, device=k.device)
+    k_cache = torch.zeros(q.size(0), max_seqlen_k, k.size(2), k.size(3), dtype=k.dtype, device=k.device)
     k_cache[:, :k.size(1)] = k
     if v_cache_is_transposed:
-        v_cache = torch.zeros(q.size(0), k.size(2), k.size(3), max_seqlen_k,
-                              dtype=k.dtype, device=k.device)
+        v_cache = torch.zeros(q.size(0), k.size(2), k.size(3), max_seqlen_k, dtype=k.dtype, device=k.device)
         v_cache[:, :, :, :v.size(1)] = v.permute(0, 1, 3, 2)  # (B,H,S,D) → (B,H,D,S)
     else:
         v_cache = torch.zeros_like(k_cache)
@@ -204,7 +201,7 @@ def flops(
 
     sdpa_result = None; tile_result = None; fa_result = None
     if args.fa:
-        fa_result = ref_program_fa(query, key, value)
+        fa_result = ref_program_fa(query, key, value, causal=is_causal)
     if args.sdpa:
         sdpa_result = ref_program(query, key, value, mask, is_causal)
     
@@ -245,7 +242,7 @@ def flops(
     fa_tflops = None; tile_tflops = None; sdpa_tflops = None
     
     if args.fa:
-        fa_latency = do_bench(fn=lambda: ref_program_fa(query, key, value), rep=num, warmup=int(num/2))
+        fa_latency = do_bench(fn=lambda: ref_program_fa(query, key, value, causal=is_causal), rep=num, warmup=int(num/2))
         fa_tflops = total_flops / fa_latency * 1e-9
         print(f"VLLM Flash Attention: {fa_latency:.3f} ms")
         print(f"VLLM Flash Attention: {fa_tflops:.3f} TFlops")
@@ -292,7 +289,7 @@ def flops(
 def kvcache_flops(
     args, num, q_shape, kv_shape,
     v_cache_is_transposed: bool = False,
-    is_causal: bool = False,
+    is_causal: bool = False, num_splits: int = 0,
 ):
     """Test flash_attn_with_kvcache — inference / KV-cache decode.
 
@@ -346,6 +343,7 @@ def kvcache_flops(
             query.permute(0,2,1,3), k_cache, v_cache,
             cache_seqlens=cache_seqlens, causal=is_causal,
             v_cache_is_transposed=v_cache_is_transposed,
+            num_splits=num_splits,
         )
         torch.cuda.synchronize()
 
@@ -355,6 +353,7 @@ def kvcache_flops(
             query.permute(0,2,1,3), k_cache, v_cache,
             cache_seqlens=cache_seqlens, causal=is_causal,
             v_cache_is_transposed=v_cache_is_transposed,
+            num_splits=num_splits,
         ),
         rep=num, warmup=int(num/2)
     )
@@ -440,7 +439,9 @@ if __name__ == "__main__":
     parser.add_argument("--kvcache_transposed", action="store_true",
                         help="Enable V pre-transpose optimization in the kvcache test "
                              "(requires seqlen_k %% 128 == 0, head_dim %% 32 == 0).")
-
+    parser.add_argument("--num_splits", type=int, default=0, help="Number of splits for the kvcache test")
+    parser.add_argument("--causal", action="store_true",
+                        help="Apply causal attention mask in flash_attn_func / flops / profile path.")
     parser.add_argument("--batch", type=int, default=1, help="Batch size")
     parser.add_argument("--n_heads", type=int, default=40, help="Number of heads")
     parser.add_argument("--seq_len", type=int, default=4096, help="Sequence length")
@@ -493,6 +494,7 @@ if __name__ == "__main__":
                 args, is_causal=True, num=args.flops_num,
                 q_shape=q_shape, kv_shape=kv_shape,
                 v_cache_is_transposed=args.kvcache_transposed,
+                num_splits=args.num_splits,
             )
     else:
         # ============================================================
@@ -507,14 +509,17 @@ if __name__ == "__main__":
             q_shape_list.append((1, 40, 1, args.head_dim))
             kv_shape_list.append((1, 40, 4096, args.head_dim))
 
-            q_shape_list.append((1, 40, 1, args.head_dim))
-            kv_shape_list.append((1, 40, 32768, args.head_dim))
+            # q_shape_list.append((1, 40, 1, args.head_dim))
+            # kv_shape_list.append((1, 40, 32768, args.head_dim))
 
             q_shape_list.append((1, 40, 1, args.head_dim))
             kv_shape_list.append((1, 40, 65536, args.head_dim))
 
-            q_shape_list.append((1, 40, 4096, args.head_dim))
-            kv_shape_list.append((1, 40, 4096, args.head_dim))
+            q_shape_list.append((1, 40, 1, args.head_dim))
+            kv_shape_list.append((1, 40, 131072, args.head_dim))
+
+            # q_shape_list.append((1, 40, 4096, args.head_dim))
+            # kv_shape_list.append((1, 40, 4096, args.head_dim))
 
             # q_shape_list.append((1, 40, 16384, args.head_dim))
             # kv_shape_list.append((1, 40, 16384, args.head_dim))
@@ -528,11 +533,11 @@ if __name__ == "__main__":
             # q_shape_list.append((2, 10, 6144, args.head_dim))
             # kv_shape_list.append((2, 10, 77, args.head_dim))
 
-            # q_shape_list.append((2, 16, 3952,  args.head_dim))
-            # kv_shape_list.append((2, 16, 512,  args.head_dim))
+            q_shape_list.append((2, 16, 3952,  args.head_dim))
+            kv_shape_list.append((2, 16, 512,  args.head_dim))
 
-            # q_shape_list.append((2, 16, 3952,  args.head_dim))
-            # kv_shape_list.append((2, 16, 3952,  args.head_dim))
+            q_shape_list.append((2, 16, 3952,  args.head_dim))
+            kv_shape_list.append((2, 16, 3952,  args.head_dim))
 
             # q_shape_list.append((8, 10, 512, args.head_dim))
             # kv_shape_list.append((8, 10, 512, args.head_dim))
@@ -540,14 +545,14 @@ if __name__ == "__main__":
             # q_shape_list.append((8, 10, 1024, args.head_dim))
             # kv_shape_list.append((8, 10, 1024, args.head_dim))
 
-            # q_shape_list.append((8, 10, 2048, args.head_dim))
-            # kv_shape_list.append((8, 10, 2048, args.head_dim))
+            q_shape_list.append((8, 10, 2048, args.head_dim))
+            kv_shape_list.append((8, 10, 2048, args.head_dim))
 
             q_shape_list.append((2, 40, 4096, args.head_dim))
             kv_shape_list.append((2, 40, 4096, args.head_dim))
 
-            q_shape_list.append((2, 40, 16384, args.head_dim))
-            kv_shape_list.append((2, 40, 16384, args.head_dim))
+            # q_shape_list.append((2, 40, 16384, args.head_dim))
+            # kv_shape_list.append((2, 40, 16384, args.head_dim))
 
 
         for q_shape, kv_shape in zip(q_shape_list, kv_shape_list):
@@ -555,12 +560,12 @@ if __name__ == "__main__":
                 torch_profile(
                     args,
                     q_shape, kv_shape,
-                    block_M=128, block_N=64, num_stages=1, threads=256, is_causal=False, attn_mask=False
+                    block_M=128, block_N=64, num_stages=1, threads=256, is_causal=args.causal, attn_mask=False
                     )
 
             if args.flops:
                 flops(
-                    args, is_causal=False, attn_mask=False, num = args.flops_num,
+                    args, is_causal=args.causal, attn_mask=False, num = args.flops_num,
                     q_shape=q_shape, kv_shape=kv_shape,
                     block_M=128, block_N=64, num_stages=1, threads=256, 
                 )

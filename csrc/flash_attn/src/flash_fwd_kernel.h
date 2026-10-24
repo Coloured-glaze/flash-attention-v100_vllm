@@ -178,8 +178,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
-    Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
-    Tensor sV = make_tensor(sK.data(), typename Kernel_traits::SmemLayoutKV{});
+    // K uses the pad-row SmemLayoutK (conflict-free 4B B-fragment reads) when it
+    // fits the smem budget (kKPadRow), with V in a SEPARATE region; legacy configs
+    // keep the shared swizzled K/V buffer (sV overlaps sK) exactly as before.
+    // cosize rounded to 16B via kSmemKHalfs: sV/sP bases must stay 16B-aligned.
+    // Offset wrapped as cute Int<> (same idiom as `sQ.data() + size(sQ)`).
+    Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutK{});
+    Tensor sV = make_tensor(Kernel_traits::kSeparateKV
+                                ? sK.data() + Int<Kernel_traits::kSmemKHalfs>{}
+                                : sK.data(),
+                            typename Kernel_traits::SmemLayoutKV{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
     Tensor sQ_warp = local_tile(sQ, Shape<Int<kWarpRows>, Int<kHeadDim>>{},
@@ -202,8 +210,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
-    Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
+    // K staging uses the dedicated 4B copy: pad-row smem row bases are only
+    // 4B-aligned for odd rows, 128b stores would be misaligned.
+    typename Kernel_traits::GmemTiledCopyK gmem_tiled_copy_K;
+    auto gmem_thr_copy_K = gmem_tiled_copy_K.get_thread_slice(tidx);
+    Tensor tKgK = gmem_thr_copy_K.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
+    Tensor tKsK = gmem_thr_copy_K.partition_D(sK);
     Tensor tKrK = make_fragment_like(tKsK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
@@ -238,7 +250,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tSsQ = smem_thr_copy_Q.retile_S(tOsQ);
     Tensor tSsP = smem_thr_copy_Q.retile_S(tOsP);
 
-    auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+    auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomK{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(mma_thread_id);
     Tensor tSsK = smem_thr_copy_K.retile_S(tOsK);
 
@@ -256,16 +268,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Repeat the partitioning with identity layouts
     Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);       // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    // K coords/preds use the dedicated 4B K copy; the V copy keeps its own.
+    Tensor tKcK = gmem_thr_copy_K.partition_S(cKV);        // (KCPY,KCPY_N,KCPY_K) -> (blk_n,blk_k)
     Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);   // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
-    Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
+    Tensor tKpK = make_tensor<bool>(make_shape(size<2>(tKsK)));
+    Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tVsV)));
 
     // Set predicates for k bounds
     if (!Is_even_K) {
         #pragma unroll
         for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
+        #pragma unroll
+        for (int k = 0; k < size(tKpK); ++k) { tKpK(k) = get<1>(tKcK(0, 0, k)) < params.d; }
         #pragma unroll
         for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
     }
@@ -278,13 +295,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     int n_block = n_block_max - 1;
     // Clear OOB rows in smem for the last K block when seqlen_k is not a multiple of kBlockN.
-    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block), tKsK, tKVcKV, tKVpKV,
+    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(gmem_tiled_copy_K, tKgK(_, _, _, n_block), tKsK, tKcK, tKpK,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
 
     // Prefetch next K to register buffer. The next block is always a full block
     // (only the last block can be partial), so we can use Is_even_MN=true.
     if (n_block > n_block_min) {
-        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
+        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_K, tKgK(_, _, _, n_block - 1), tKrK, tKcK, tKpK);
     }
 
     // Is_Q_in_regs == true (disabled: causes register spill to DRAM)
@@ -331,7 +348,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
-        __syncthreads();  // finish reading sK before V overwrites
+        __syncthreads();  // pad configs: separates sK reads from later sK writes; shared-K/V configs: sK must be read before V overwrites it
 
         // Load V, overwriting K's smem
         if (masking_step > 0) {
@@ -351,7 +368,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_K, tKgK(_, _, _, n_block - 1), tKrK, tKcK, tKpK);
         }
 
         mask.template apply_mask<Is_causal, Is_even_MN>(
@@ -427,7 +444,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
-        __syncthreads();  // finish reading sK before V overwrites
+        __syncthreads();  // pad configs: separates sK reads from later sK writes; shared-K/V configs: sK must be read before V overwrites it
 
         // Load V, overwriting K's smem
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
@@ -440,7 +457,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Prefetch next K to register buffer
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKrK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_K, tKgK(_, _, _, n_block - 1), tKrK, tKcK, tKpK);
         }
 
         mask.template apply_mask</*Causal_mask=*/false>(
@@ -672,6 +689,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // so the pointer arithmetic is identical.
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
+    // SplitKV uses the LEGACY K path (swizzled SmemLayoutKV + 128b copies): its K
+    // staging is a direct gmem->smem copy with no register prefetch, so the 4x
+    // LDG.32 count of the pad layout exposed gmem latency on the critical path
+    // (-28% decode). The pad layout stays on the non-split (prefill) path only.
     Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
     Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutVCopy{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutV{});

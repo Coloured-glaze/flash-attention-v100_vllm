@@ -91,6 +91,35 @@ struct Copy_Traits<SM70_STG_GLOBAL_CG_128b> {
     }
 };
 
+// 32-bit variant for K staging: the pad-row SmemLayoutK has odd-word row
+// strides, so smem row bases are only 4B-aligned for odd rows and K stores
+// must be 32-bit (STS.32). Wavefront cost is unchanged (1 wf per 32 lanes x
+// 4B when conflict-free).
+struct SM70_LDG_GLOBAL_CG_32b : UniversalCopy<uint_bit_t<32>> {
+    using SRegisters = uint_bit_t<32>[1];
+    using DRegisters = uint_bit_t<32>[1];
+
+    CUTE_HOST_DEVICE static void
+    copy(uint_bit_t<32> const& gmem_src, uint_bit_t<32>& smem_dst) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700)
+        uint32_t r0;
+        auto gmem_ptr = reinterpret_cast<uint32_t const*>(&gmem_src);
+        asm volatile("ld.global.cg.b32 %0, [%1];\n" : "=r"(r0) : "l"(gmem_ptr));
+        smem_dst = reinterpret_cast<uint_bit_t<32> const&>(r0);
+#else
+        smem_dst = gmem_src;
+#endif
+    }
+};
+
+template <>
+struct Copy_Traits<SM70_LDG_GLOBAL_CG_32b> {
+    using ThrID = Layout<_1>;
+    using SrcLayout = Layout<Shape<_1, Int<sizeof_bits<uint_bit_t<32>>::value>>>;
+    using DstLayout = Layout<Shape<_1, Int<sizeof_bits<uint_bit_t<32>>::value>>>;
+    using RefLayout = SrcLayout;
+};
+
 }  // namespace cute
 
 using namespace cute;
@@ -122,6 +151,23 @@ struct Flash_fwd_kernel_traits  {
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
+
+    // Pad-row K layout (see SmemLayoutK below) needs K/V separated in smem; enable
+    // it only when the separated+pad budget fits the 96KB SM70 limit. Configs that
+    // don't fit keep the legacy shared-K/V swizzled layout (no K-read improvement,
+    // but identical behavior/smem to the pre-change kernel).
+    static constexpr bool kKPadRow =
+        (kBlockM * kHeadDim + kBlockN * (kHeadDim + 2) + kBlockN * kHeadDim + kBlockM * kBlockN)
+            * int(sizeof(Element)) <= 96 * 1024;
+    static constexpr bool kSeparateKV = kKPadRow;
+
+    // K smem->reg fragment copy: 4B max vector under the pad-row layout. Row bases
+    // (row * (kHeadDim+2) halves) are only 4B-aligned for odd rows, so 64b/128b
+    // alignment assumptions would emit misaligned LDS. 4B reads keep the wavefront
+    // cost optimal (1 wf per 32 lanes x 4B, zero conflict).
+    using SmemCopyAtomK = std::conditional_t<kKPadRow,
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<32>, Element>,
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>>;
 
     static_assert(kBlockM % kCtaWarps == 0, "warp-stationary requires blockM divisible by CTA warps");
     static constexpr int kWarpRows = kBlockM / kCtaWarps;
@@ -155,6 +201,20 @@ struct Flash_fwd_kernel_traits  {
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
+
+    // K smem layout (when kKPadRow): pad-row WITHOUT swizzle. Row stride =
+    // kHeadDim + 2 halves, an odd word count ((kHeadDim+2)/2), so row bases span
+    // all 32 banks: bank(row, word_col) = (row + word_col) mod 32. K B-fragment
+    // reads at 4B granularity are conflict-free for ALL rows — this removes the
+    // 2-way conflict of the swizzled layout (host sweep: 268 -> 131 wf per
+    // mma-group-iter) and the 8-row bank-phase period of Swizzle<3,3,3>.
+    // Staging must be 4B-granular (GmemTiledCopyK / SmemCopyAtomK) because row
+    // bases are 8B/16B-misaligned for odd rows.
+    // See tmp/swizzle_sweep4.cu and .workbuddy/memory/2026-10-23.md.
+    static_assert(kHeadDim % 4 == 0, "pad-row SmemLayoutK requires (kHeadDim+2)/2 to be odd");
+    using SmemLayoutK = std::conditional_t<kKPadRow,
+        Layout<Shape<Int<kBlockN>, Int<kHeadDim>>, Stride<Int<kHeadDim + 2>, _1>>,
+        SmemLayoutKV>;
 
     using SmemLayoutAtomP = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
@@ -212,12 +272,29 @@ struct Flash_fwd_kernel_traits  {
     using SmemCopyAtomOaccum = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>;
 
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
+    // NOTE: physical span (cosize), NOT logical size: the pad-row layout spans
+    // kBlockN*(kHeadDim+2) halves, larger than its kBlockN*kHeadDim logical
+    // elements. Using the logical count here under-allocates and lets K's tail
+    // rows clobber the next smem tensor.
+    // Rounded up to 16B (8 halves) so the FOLLOWING tensors (sV/sP, whose swizzled
+    // layouts use 128b packet addressing) keep 16B-aligned bases.
+    // Pure template arithmetic: cosize() of the conditional layout type is not
+    // reliably a constant expression in nvcc's device pass.
+    static constexpr int kSmemKCosizeRaw = kKPadRow ? kBlockN * (kHeadDim + 2) : kBlockN * kHeadDim;
+    static constexpr int kSmemKHalfs = (kSmemKCosizeRaw + 7) / 8 * 8;
+    static constexpr int kSmemKSize = kSmemKHalfs * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * sizeof(Element);
     static constexpr int kSmemPSize = size(SmemLayoutP{}) * sizeof(Element);
-    // SplitKV uses separate K/V smem + sP (kSmemQSize + 2*kSmemKVSize + kSmemPSize).
-    // Non-splitKV uses shared K/V smem + sP (kSmemQSize + kSmemKVSize + kSmemPSize).
+    // When kKPadRow (kSeparateKV), the NON-SPLIT kernel places K (padded SmemLayoutK)
+    // and V in separate smem regions. The SPLITKV (decode) kernel always uses the
+    // LEGACY shared-layout path (swizzled SmemLayoutKV + 128b copies): its K staging
+    // is a direct gmem->smem copy with no register prefetch, so the 4x LDG.32 count
+    // exposed gmem latency on the critical path (-28% decode). Legacy configs keep
+    // the shared K/V buffer (sV overlaps sK) exactly as before.
     static constexpr int kSmemSizeSplitKV = kSmemQSize + kSmemKVSize * 2 + kSmemPSize;
-    static constexpr int kSmemSizeNonSplit = kSmemQSize + kSmemKVSize + kSmemPSize;
+    static constexpr int kSmemSizeNonSplit = kSeparateKV
+        ? kSmemQSize + kSmemKSize + kSmemKVSize + kSmemPSize
+        : kSmemQSize + kSmemKVSize + kSmemPSize;
     // V pre-transpose path requires separated K/V smem (the V tile has a different
     // swizzle pattern from K and cannot share the same physical region), so it uses
     // the SplitKV size. The non-transposed path keeps the historical NonSplit size.
@@ -250,6 +327,19 @@ struct Flash_fwd_kernel_traits  {
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
+
+    // 4B gmem->smem copy dedicated to K staging under the pad-row layout (only
+    // 4B-aligned row bases); legacy shared-layout configs reuse GmemTiledCopyQKV.
+    static constexpr int kGmemElemsPerLoadK = 2;  // 32-bit loads/stores
+    static constexpr int kGmemThreadsPerRowK = kBlockKSmem / kGmemElemsPerLoadK;
+    static_assert(kNThreads % kGmemThreadsPerRowK == 0, "kNThreads must be a multiple of kGmemThreadsPerRowK");
+    using GmemLayoutAtomK = Layout<Shape <Int<kNThreads / kGmemThreadsPerRowK>, Int<kGmemThreadsPerRowK>>,
+                                   Stride<Int<kGmemThreadsPerRowK>, _1>>;
+    using GmemTiledCopyKPad = decltype(
+        make_tiled_copy(Copy_Atom<SM70_LDG_GLOBAL_CG_32b, Element>{},
+                        GmemLayoutAtomK{},
+                        Layout<Shape<_1, _2>>{}));  // Val layout, 2 vals per read (32-bit)
+    using GmemTiledCopyK = std::conditional_t<kKPadRow, GmemTiledCopyKPad, GmemTiledCopyQKV>;
 
     // V pre-transpose path: the transposed V tile in gmem is (kHeadDim, kBlockN) with
     // kBlockN as the contiguous (fast) dimension. The QKV copy atom above is shaped for

@@ -37,6 +37,10 @@ flash_attn_config.py
 analysis/
 .whl
 
+*.exp
+*.lib
+*.exe
+
 .workbuddy/
 csrc/tilelang/
 
@@ -48,17 +52,37 @@ profile_out_*.csv
 profile_out_*.txt
 *_tmp.txt
 *_temp.txt
+tmp/
+
 cuda_kernel_sample/*
+
 tests/ncu_analyse/*.log
+tests/ncu_analyse/*/*.log
+
 tests/ncu_analyse/prof_*.csv
+tests/ncu_analyse/*/prof_*.csv
+
 tests/ncu_analyse/prof_*.txt
+tests/ncu_analyse/*/prof_*.txt
+
 tests/ncu_analyse/tl_templates/*
+
 tests/ncu_analyse/tile_flash*.cu
+tests/ncu_analyse/*/tile_flash*.cu
+
 tests/ncu_analyse/tile_fa_dim*
+tests/ncu_analyse/*/tile_fa_dim*
+
 tests/ncu_analyse/flops_*.png
+
 dim*_*.txt
 autotuner*
 sm70_fa_config*
 
 csrc/flash_attn/src/v_transpose_kernel.cuh
 csrc/flash_attn/src/v_transpose_sm70.cu
+doc/iteration/e228955_analyse.log
+doc/iteration/e228955_code.md
+doc/iteration/e228955_gemm_plan_1.md
+doc/iteration/e228955_Marlin_gemm_plan.md
+doc/iteration/
